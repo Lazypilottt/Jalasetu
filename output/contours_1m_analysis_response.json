@@ -1,0 +1,148 @@
+{
+  "status": "success",
+  "message": "Contour analysis and pond catchment delineation completed successfully.",
+  "input_summary": {
+    "num_contours": 2711,
+    "elevation_min": 30.0,
+    "elevation_max": 298.0,
+    "dem_resolution_m": 10.0,
+    "utm_crs": "EPSG:32644"
+  },
+  "recommended_site": {
+    "site_id": "site_1",
+    "rank": 1,
+    "latitude": 21.263519,
+    "longitude": 81.308326,
+    "elevation_m": 30.0,
+    "suitability_score": 100.0,
+    "area_m2": 3000.0,
+    "slope_deg": 0.0
+  },
+  "alternative_sites": [
+    {
+      "site_id": "site_2",
+      "rank": 2,
+      "latitude": 21.263554,
+      "longitude": 81.298995,
+      "elevation_m": 30.0,
+      "suitability_score": 100.0,
+      "area_m2": 2800.0,
+      "slope_deg": 0.0
+    },
+    {
+      "site_id": "site_3",
+      "rank": 3,
+      "latitude": 21.263546,
+      "longitude": 81.30314,
+      "elevation_m": 30.0,
+      "suitability_score": 100.0,
+      "area_m2": 2800.0,
+      "slope_deg": 0.0
+    },
+    {
+      "site_id": "site_4",
+      "rank": 4,
+      "latitude": 21.255804,
+      "longitude": 81.312714,
+      "elevation_m": 30.0,
+      "suitability_score": 100.0,
+      "area_m2": 2000.0,
+      "slope_deg": 0.0
+    },
+    {
+      "site_id": "site_5",
+      "rank": 5,
+      "latitude": 21.239866,
+      "longitude": 81.281825,
+      "elevation_m": 30.0,
+      "suitability_score": 100.0,
+      "area_m2": 1800.0,
+      "slope_deg": 0.0
+    }
+  ],
+  "catchment": {
+    "boundary_geojson": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [
+                  81.30805549381684,
+                  21.2633116664958
+                ],
+                [
+                  81.30805511793092,
+                  21.263130961759316
+                ],
+                [
+                  81.3084406709331,
+                  21.263130256626557
+                ],
+                [
+                  81.30844104728945,
+                  21.26331096135648
+                ],
+                [
+                  81.30805549381684,
+                  21.2633116664958
+                ]
+              ]
+            ]
+          },
+          "properties": {
+            "delineation_method": "basin_approximation",
+            "area_m2": 800.0,
+            "area_ha": 0.08,
+            "cell_count": 8,
+            "elevation_meters": {
+              "min": 220.33,
+              "max": 289.22,
+              "mean": 274.89,
+              "relief_span": 68.89
+            },
+            "mean_slope_degrees": 40.37,
+            "mean_slope_percent": 133.15,
+            "pour_point": {
+              "input_wgs84": [
+                21.263519,
+                81.308326
+              ],
+              "snapped_wgs84": [
+                21.263266,
+                81.308296
+              ],
+              "input_utm": [
+                531987.47,
+                2351343.67
+              ],
+              "snapped_utm": [
+                531984.47,
+                2351315.67
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "area_m2": 800.0,
+    "area_hectares": 0.08,
+    "average_slope_deg": 40.37,
+    "elevation_range_m": {
+      "min_m": 220.33,
+      "max_m": 289.22,
+      "relief_m": 68.89
+    },
+    "delineation_method": "basin_approximation"
+  },
+  "processing_notes": [
+    "Parsed 2711 contour lines with elevations ranging from 30.0m to 298.0m.",
+    "Generated DEM grid: 264x326 cells at 10.0m resolution in EPSG:32644.",
+    "Computed terrain derivatives: mean slope=7.2\u00b0, mean suitability=58.6/100, suitable area=50.2%.",
+    "Selected top recommended pond site (site_1): score=100.0, area=3000m\u00b2 at (21.26352\u00b0N, 81.30833\u00b0E).",
+    "Delineated upstream catchment using basin_approximation: area=0.08 ha (800m\u00b2), elevation span=68.9m, mean slope=40.4\u00b0."
+  ]
+}
