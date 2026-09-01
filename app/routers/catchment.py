@@ -84,7 +84,14 @@ router = APIRouter()
     },
 )
 async def analyze_contour(
-    file: UploadFile = File(..., description="KML (.kml) or KMZ (.kmz) file containing elevation contour lines"),
+    contour_map: Optional[UploadFile] = File(
+        None,
+        description="KML (.kml) or KMZ (.kmz) file containing elevation contour lines (preferred form field name: 'contour_map').",
+    ),
+    file: Optional[UploadFile] = File(
+        None,
+        description="(legacy) KML (.kml) or KMZ (.kmz) file uploaded under form field name 'file' (kept for backward compatibility).",
+    ),
     # --- Tunable Pipeline Overrides ---
     dem_resolution_m: Optional[float] = Form(
         None, ge=0.5, le=100.0, description="DEM raster grid resolution in meters (e.g. 5.0m). Auto-derived if omitted."
@@ -147,8 +154,15 @@ async def analyze_contour(
     """
     Execute contour analysis pipeline on uploaded KML/KMZ file.
     """
-    # 1. Validate file extension
-    filename = file.filename or "upload"
+    # 1. Select uploaded file: prefer 'contour_map' form field, fall back to legacy 'file'
+    upload_file = contour_map or file
+    if upload_file is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No file was uploaded. Please attach a KML/KMZ file using the form field 'contour_map'.",
+        )
+
+    filename = upload_file.filename or "upload"
     ext = Path(filename).suffix.lower()
     if ext not in (".kml", ".kmz"):
         raise HTTPException(
@@ -168,7 +182,7 @@ async def analyze_contour(
     temp_path = Path(temp_file.name)
 
     try:
-        shutil.copyfileobj(file.file, temp_file)
+        shutil.copyfileobj(upload_file.file, temp_file)
         temp_file.flush()
         temp_file.close()
 
