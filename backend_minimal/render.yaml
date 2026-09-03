@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: jalasetu-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    branch: main
+    region: oregon
+    plan: free
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
+    autoDeploy: true
