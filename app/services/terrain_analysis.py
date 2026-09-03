@@ -38,6 +38,8 @@ class TerrainAnalysisResult:
     dem_data: DEMData               # Source DEM reference
     twi: Optional[np.ndarray] = None        # Topographic Wetness Index (ln(a / tan(beta)))
     twi_score: Optional[np.ndarray] = None  # Normalized TWI score [0, 100]
+    flow_accum: Optional[np.ndarray] = None  # Pre-computed D8 flow accumulation grid (reused by catchment delineation)
+    flow_dir: Optional[np.ndarray] = None    # Pre-computed D8 flow direction grid (reused by catchment delineation)
 
     @property
     def shape(self) -> Tuple[int, int]:
@@ -258,10 +260,25 @@ class TerrainAnalysisService:
             dem_data, neighborhood_radius_m=neighborhood_radius_m
         )
 
-        # 3. Topographic Wetness Index (TWI) computation
-        twi_raw, twi_score = self.compute_twi(dem_data, slope_deg=slope_deg)
+        # 3. Compute D8 flow direction and accumulation once here so they can be
+        #    (a) passed into compute_twi (avoids internal recomputation) and
+        #    (b) stored on the result for reuse by CatchmentDelineationService.
+        dx = abs(dem_data.transform.a) if hasattr(dem_data.transform, "a") else dem_data.resolution
+        dy = abs(dem_data.transform.e) if hasattr(dem_data.transform, "e") else dem_data.resolution
+        if dx <= 0 or dy <= 0:
+            dx = dy = dem_data.resolution
 
-        # 4. Slope scoring function [0 - 100]
+        from app.services.catchment_delineation import (
+            compute_native_d8_flow_direction,
+            compute_native_d8_flow_accumulation,
+        )
+        flow_dir_arr = compute_native_d8_flow_direction(dem_data.array, dx, dy)
+        flow_accum_arr = compute_native_d8_flow_accumulation(flow_dir_arr)
+
+        # 4. Topographic Wetness Index (TWI) — reuse already-computed flow_accum
+        twi_raw, twi_score = self.compute_twi(dem_data, slope_deg=slope_deg, flow_accum=flow_accum_arr)
+
+        # 5. Slope scoring function [0 - 100]
         # Slopes <= ideal_slope_deg get 100
         # Slopes between ideal and max decay linearly from 100 to 0
         # Slopes > max_slope_deg get 0
@@ -275,7 +292,7 @@ class TerrainAnalysisService:
             ),
         )
 
-        # 5. Normalize weights
+        # 6. Normalize weights
         total_weight = weight_slope + weight_depression + weight_twi
         if total_weight <= 0:
             w_slope, w_dep, w_twi = 0.35, 0.35, 0.30
@@ -284,11 +301,11 @@ class TerrainAnalysisService:
             w_dep = weight_depression / total_weight
             w_twi = weight_twi / total_weight
 
-        # 6. Composite Multi-Criteria Suitability Score [0 - 100]
+        # 7. Composite Multi-Criteria Suitability Score [0 - 100]
         suitability = w_slope * slope_score + w_dep * depression_score + w_twi * twi_score
         suitability = np.clip(suitability, 0.0, 100.0)
 
-        # 7. Binary Suitability Mask
+        # 8. Binary Suitability Mask
         # Must exceed suitability threshold AND be within allowable slope limit
         suitable_mask = (suitability >= suitability_threshold) & (slope_deg <= max_slope_deg)
 
@@ -301,15 +318,17 @@ class TerrainAnalysisService:
         )
 
         return TerrainAnalysisResult(
-            slope_degrees=slope_deg,
-            slope_percent=slope_pct,
-            depression_index=depression_score,
-            tpi=tpi,
-            suitability_score=suitability,
+            slope_degrees=slope_deg.astype(np.float32),
+            slope_percent=slope_pct.astype(np.float32),
+            depression_index=depression_score.astype(np.float32),
+            tpi=tpi.astype(np.float32),
+            suitability_score=suitability.astype(np.float32),
             suitable_mask=suitable_mask,
             dem_data=dem_data,
-            twi=twi_raw,
-            twi_score=twi_score,
+            twi=twi_raw.astype(np.float32),
+            twi_score=twi_score.astype(np.float32),
+            flow_accum=flow_accum_arr.astype(np.float32),
+            flow_dir=flow_dir_arr,
         )
 
     def save_geotiff(

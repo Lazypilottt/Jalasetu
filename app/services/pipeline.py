@@ -331,6 +331,8 @@ def analyze_contour_file(
             curve_number=config.get("curve_number", 75.0),
             pond_area_m2=top_cand.area_m2,
             pond_storage_m3=top_cand.storage_capacity_m3,
+            precomputed_flow_accum=analysis_result.flow_accum,
+            precomputed_flow_dir=analysis_result.flow_dir,
         )
 
         delineation_method_name = (

@@ -306,11 +306,17 @@ class DEMBuilderService:
             logger.warning("Primary interpolation (%s) failed (%s), falling back to 'linear'", interp_method, e)
             dem_primary = griddata(points_xy, z_pts, (grid_x, grid_y), method="linear")
 
-        # Nearest-neighbor interpolation to fill convex hull boundary holes/corners
-        dem_nearest = griddata(points_xy, z_pts, (grid_x, grid_y), method="nearest")
-
-        # Blend: replace any NaNs from linear/cubic interpolation with nearest-neighbor values
-        dem_array = np.where(np.isnan(dem_primary), dem_nearest, dem_primary)
+        # Lazy nearest-neighbor fill: only interpolate the NaN pixels instead of
+        # allocating a second full-sized grid (saves ~1x DEM worth of RAM).
+        nan_mask = np.isnan(dem_primary)
+        if np.any(nan_mask):
+            dem_primary[nan_mask] = griddata(
+                points_xy,
+                z_pts,
+                (grid_x[nan_mask], grid_y[nan_mask]),
+                method="nearest",
+            )
+        dem_array = dem_primary  # no second full-grid copy needed
 
         # Sanity check: replace any persistent NaNs with median elevation
         if np.isnan(dem_array).any():
@@ -318,7 +324,7 @@ class DEMBuilderService:
             dem_array = np.nan_to_num(dem_array, nan=median_elev)
 
         dem_data = DEMData(
-            array=dem_array.astype(np.float64),
+            array=dem_array.astype(np.float32),  # float32 halves DEM memory vs float64
             transform=transform,
             crs=crs_str,
             nodata=-9999.0,
