@@ -1,0 +1,38 @@
+# Never copy local virtual environments into Docker —
+# they contain hardcoded absolute shebangs pointing to the host machine's Python path.
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local output / debug files
+output/
+*.log
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Git internals
+.git/
+.gitignore
