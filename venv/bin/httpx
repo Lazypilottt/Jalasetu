@@ -1,8 +1,0 @@
-#!/bin/sh
-'''exec' "/Users/lazypilot/Desktop/Lazypilot/IIT Bhilai/Acad/SEM7/CSD/Assignment1/JalaSetu/venv/bin/python3" "$0" "$@"
-' '''
-import sys
-from httpx import main
-if __name__ == '__main__':
-    sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(main())

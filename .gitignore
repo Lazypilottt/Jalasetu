@@ -1,0 +1,33 @@
+# Virtual environments — NEVER commit these; they have hardcoded host paths in shebangs
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Output files
+output/
+*.log
+
+# Secrets / env files
+.env
+*.env
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+Thumbs.db
