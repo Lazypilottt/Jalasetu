@@ -149,12 +149,15 @@ def estimate_adaptive_resolution(gdf_utm: gpd.GeoDataFrame) -> float:
     height = max(maxy - miny, 1.0)
     max_dim = max(width, height)
 
-    # Target ~250-400 grid cells along the maximum dimension for optimal balance
-    # between topographic detail and interpolation speed.
-    raw_res = max_dim / 300.0
+    # Target ~200 grid cells along the maximum dimension — keeps the DEM grid
+    # at or below ~250×250 cells (≤62,500 cells) so peak RAM stays well under
+    # 512 MB on constrained servers (Render free tier, student VMs, etc.).
+    raw_res = max_dim / 200.0
 
-    # Clamp between 1.0 meter (for small farm plots) and 50.0 meters (for large regional basins)
-    clamped_res = float(np.clip(raw_res, 1.0, 50.0))
+    # Clamp between 2.0 meters (sufficient for farm-pond scale) and 50.0 meters
+    # (for large regional basins). The 2 m lower bound prevents runaway grid sizes
+    # when contour extents are very small.
+    clamped_res = float(np.clip(raw_res, 2.0, 50.0))
 
     # Round to clean standard intervals (e.g. 1.0, 2.0, 2.5, 5.0, 10.0, 20.0, etc.)
     standard_steps = [1.0, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 25.0, 50.0]

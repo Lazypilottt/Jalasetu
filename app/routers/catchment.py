@@ -159,15 +159,28 @@ async def analyze_contour(
     if upload_file is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No file was uploaded. Please attach a KML/KMZ file using the form field 'contour_map'.",
+            detail=(
+                "No file was uploaded. In Postman: set request to POST, body to form-data, "
+                "add a key named 'contour_map' of type File, and select your .kml or .kmz file."
+            ),
         )
 
-    filename = upload_file.filename or "upload"
+    filename = upload_file.filename or "upload.kml"
     ext = Path(filename).suffix.lower()
+
+    # If filename has no extension, try to guess from Content-Type header
+    if ext not in (".kml", ".kmz"):
+        content_type = (upload_file.content_type or "").lower()
+        if "kmz" in content_type or "zip" in content_type:
+            ext = ".kmz"
+        else:
+            # Default to .kml — most uploads are KML; if wrong, XML parse will catch it
+            ext = ".kml"
+
     if ext not in (".kml", ".kmz"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '{ext}'. Only .kml and .kmz contour files are supported.",
+            detail=f"Unsupported file format '{Path(filename).suffix}'. Only .kml and .kmz contour files are supported.",
         )
 
     # 2. Validate parameter constraints

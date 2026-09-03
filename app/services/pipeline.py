@@ -13,6 +13,7 @@ Provides:
   - DEFAULT_PIPELINE_PARAMS dictionary documenting all tunable thresholds and weights
 """
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional, Union
@@ -152,6 +153,10 @@ def analyze_contour_file(
         f"Generated DEM grid: {dem_data.height}x{dem_data.width} cells at {dem_data.resolution:.1f}m resolution in {dem_data.crs}."
     )
 
+    # Free contour GeoDataFrame — no longer needed after DEM construction
+    del contours_gdf
+    gc.collect()
+
     # =========================================================================
     # Step 3: Terrain & Suitability Analysis
     # =========================================================================
@@ -206,6 +211,15 @@ def analyze_contour_file(
             input_summary=input_summary,
             processing_notes=processing_notes + [f"Pond siting error: {e}"],
         )
+
+    # Free large terrain arrays that are no longer needed — only flow_accum
+    # and flow_dir are required for catchment delineation.
+    analysis_result.slope_percent = None  # type: ignore[assignment]
+    analysis_result.depression_index = None  # type: ignore[assignment]
+    analysis_result.tpi = None  # type: ignore[assignment]
+    analysis_result.twi_score = None  # type: ignore[assignment]
+    analysis_result.suitable_mask = None  # type: ignore[assignment]
+    gc.collect()
 
     # If no candidate passed strict thresholds, attempt a relaxed fallback
     candidates = siting_result.candidates
