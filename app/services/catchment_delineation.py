@@ -81,7 +81,9 @@ class CatchmentResult:
     polygon_utm: Union[Polygon, MultiPolygon]
     polygon_wgs84: Union[Polygon, MultiPolygon]
     method_used: str  # 'flow_accumulation' (pysheds) or 'basin_approximation' (native D8 BFS)
-    dem_data: DEMData
+    # NOTE: dem_data is intentionally NOT stored here to allow the DEM array to be
+    # garbage-collected as soon as the pipeline finishes. Pass dem_data explicitly
+    # to save_catchment_visualization() if you need it for debug plots.
     scs_runoff: Optional[Dict[str, Any]] = None
     feasibility: Optional[Dict[str, Any]] = None
     erosion_metrics: Optional[Dict[str, Any]] = None
@@ -183,25 +185,23 @@ def compute_native_d8_flow_accumulation(fdir: np.ndarray) -> np.ndarray:
     rows, cols = fdir.shape
     in_degree = np.zeros((rows, cols), dtype=np.int32)
 
-    # 1. Count incoming flow edges for each cell
-    for r in range(rows):
-        for c in range(cols):
-            k = fdir[r, c]
-            if k >= 0:
-                dr, dc = D8_OFFSETS[k]
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < rows and 0 <= nc < cols:
-                    in_degree[nr, nc] += 1
+    # 1. Vectorized in-degree counting (replaces pure-Python nested loops)
+    valid = fdir >= 0
+    r_src, c_src = np.where(valid)
+    if r_src.size > 0:
+        directions = fdir[r_src, c_src].astype(np.intp)
+        dr = np.array([D8_OFFSETS[k][0] for k in directions], dtype=np.intp)
+        dc = np.array([D8_OFFSETS[k][1] for k in directions], dtype=np.intp)
+        r_dst = r_src + dr
+        c_dst = c_src + dc
+        in_bounds = (r_dst >= 0) & (r_dst < rows) & (c_dst >= 0) & (c_dst < cols)
+        np.add.at(in_degree, (r_dst[in_bounds], c_dst[in_bounds]), 1)
 
     # 2. Queue all headwater cells (in_degree == 0)
-    queue = collections.deque()
-    for r in range(rows):
-        for c in range(cols):
-            if in_degree[r, c] == 0:
-                queue.append((r, c))
+    queue = collections.deque(zip(*np.where(in_degree == 0)))
 
     # 3. Accumulate flow (each cell starts with its own weight of 1)
-    accum = np.ones((rows, cols), dtype=np.float64)
+    accum = np.ones((rows, cols), dtype=np.float32)  # float32 halves memory vs float64
 
     while queue:
         r, c = queue.popleft()
@@ -443,6 +443,8 @@ class CatchmentDelineationService:
         curve_number: float = 75.0,
         pond_area_m2: Optional[float] = None,
         pond_storage_m3: Optional[float] = None,
+        precomputed_flow_accum: Optional[np.ndarray] = None,
+        precomputed_flow_dir: Optional[np.ndarray] = None,
     ) -> CatchmentResult:
         """
         Delineate catchment boundary draining to the specified pour point.
@@ -458,6 +460,11 @@ class CatchmentDelineationService:
             curve_number (float): SCS Runoff Curve Number (default 75.0).
             pond_area_m2 (Optional[float]): Pond footprint area for ratio checks.
             pond_storage_m3 (Optional[float]): Pond storage volume for filling factor.
+            precomputed_flow_accum (Optional[np.ndarray]): Pre-computed flow accumulation grid
+                from TerrainAnalysisResult. When provided the native D8 engine skips recomputation,
+                saving ~1x DEM worth of RAM and significant CPU time.
+            precomputed_flow_dir (Optional[np.ndarray]): Pre-computed flow direction grid.
+                Must be provided together with precomputed_flow_accum.
 
         Returns:
             CatchmentResult: Delineated catchment polygon, area, slope, elevation, and hydrology metrics.
@@ -536,10 +543,17 @@ class CatchmentDelineationService:
         # 4. Fallback Execution via Native D8 BFS Engine
         if catchment_mask is None or not np.any(catchment_mask):
             method_used = "basin_approximation"
-            logger.info("Executing native D8 flow direction and accumulation routing...")
 
-            flow_dir = compute_native_d8_flow_direction(dem_data.array, dx, dy)
-            flow_accum = compute_native_d8_flow_accumulation(flow_dir)
+            # Reuse precomputed flow arrays from terrain analysis when available
+            # to avoid a full recomputation (saves ~1x DEM worth of RAM + CPU time).
+            if precomputed_flow_accum is not None and precomputed_flow_dir is not None:
+                logger.info("Reusing precomputed D8 flow arrays from terrain analysis.")
+                flow_dir = precomputed_flow_dir
+                flow_accum = precomputed_flow_accum
+            else:
+                logger.info("Executing native D8 flow direction and accumulation routing...")
+                flow_dir = compute_native_d8_flow_direction(dem_data.array, dx, dy)
+                flow_accum = compute_native_d8_flow_accumulation(flow_dir)
 
             # Snap pour point to local high-accumulation cell
             snapped_row, snapped_col = snap_pour_point_to_stream(
@@ -651,7 +665,6 @@ class CatchmentDelineationService:
             polygon_utm=polygon_utm,
             polygon_wgs84=polygon_wgs84,
             method_used=method_used,
-            dem_data=dem_data,
             scs_runoff=scs_runoff_data,
             feasibility=feasibility_data,
             erosion_metrics=erosion_data,
@@ -677,6 +690,7 @@ class CatchmentDelineationService:
         self,
         result: CatchmentResult,
         output_path: Union[str, Path],
+        dem_data: Optional[DEMData] = None,
         candidate_site: Optional[PondSiteCandidate] = None,
         title: Optional[str] = None,
     ) -> Path:
@@ -684,16 +698,29 @@ class CatchmentDelineationService:
         Generate and save a 2-panel visual overlay plot:
         Panel 1: DEM Hillshade + Elevation + Catchment Boundary Overlay + Snapped Pour Point Marker
         Panel 2: Stream Drainage Network (Flow Accumulation) + Catchment Boundary
+
+        Args:
+            result: The CatchmentResult from delineate().
+            output_path: File path to write the PNG to.
+            dem_data: The DEMData object. Must be passed explicitly since it is
+                no longer stored on CatchmentResult to allow earlier GC.
+            candidate_site: Optional candidate site marker to overlay.
+            title: Optional plot title override.
         """
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.colors import LightSource, LogNorm
 
+        if dem_data is None:
+            raise ValueError(
+                "dem_data must be passed explicitly to save_catchment_visualization() "
+                "— it is no longer stored on CatchmentResult."
+            )
+
         path = Path(output_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        dem_data = result.dem_data
         minx, miny, maxx, maxy = dem_data.bounds
         extent = [minx, maxx, miny, maxy]
 
