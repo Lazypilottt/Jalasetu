@@ -45,4 +45,4 @@ COPY . /app
 EXPOSE 8000
 
 # Default command: use uvicorn. Render provides $PORT env variable.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --limit-concurrency 1 --timeout-keep-alive 60"]

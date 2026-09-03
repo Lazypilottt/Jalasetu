@@ -212,6 +212,14 @@ curl -X POST "http://127.0.0.1:8000/analyzeContour" \
   -F "suitability_threshold=60.0"
 ```
 
+curl -X POST "http://10.1.75.51:3204/analyzeContour" \
+  -F "file=@contours_1m.kml" \
+  -F "dem_resolution_m=5.0" \
+  -F "ideal_slope_deg=3.0" \
+  -F "max_slope_deg=8.0" \
+  -F "min_pond_area_m2=200.0" \
+  -F "suitability_threshold=60.0"
+
 #### Example Response
 
 ```json
