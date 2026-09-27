@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, useMap, LayersControl } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ResultsLayer, { computeCombinedResultsBounds, hasValidGeoJSONGeometry } from './ResultsLayer';
@@ -15,6 +15,7 @@ L.Icon.Default.mergeOptions({
 // Generic geographic center of the Indian subcontinent (national scale overview)
 const GENERIC_DEFAULT_CENTER = [20.5937, 78.9629];
 const GENERIC_DEFAULT_ZOOM = 5;
+const DEFAULT_FIT_BOUNDS_OPTIONS = Object.freeze({ padding: [50, 50], maxZoom: 17 });
 
 /**
  * MapLegend Component
@@ -30,7 +31,7 @@ const GENERIC_DEFAULT_ZOOM = 5;
  * @param {boolean} [props.isOpen=true] - Expanded or collapsed state.
  * @param {Function} [props.onToggle] - Toggle callback.
  */
-export function MapLegend({ analysisData, isOpen = true, onToggle }) {
+export function MapLegend({ analysisData, selectedArea = null, isOpen = true, onToggle }) {
   if (!analysisData) return null;
 
   const hasRecBoundary = hasValidGeoJSONGeometry(analysisData.recommended_site?.boundary_geojson);
@@ -58,6 +59,15 @@ export function MapLegend({ analysisData, isOpen = true, onToggle }) {
 
       {isOpen && (
         <div className="legend-section">
+          {selectedArea && (
+            <div className="legend-item">
+              <div className="legend-swatch legend-swatch-selected-area"></div>
+              <div className="legend-text-group">
+                <span className="legend-item-label">Selected Land Area</span>
+                <span className="legend-item-sub">Green circle used to prioritize sites</span>
+              </div>
+            </div>
+          )}
           {/* 1. Recommended Pond Excavation Footprint Polygon */}
           {hasRecBoundary ? (
             <div className="legend-item">
@@ -70,7 +80,7 @@ export function MapLegend({ analysisData, isOpen = true, onToggle }) {
           ) : (
             analysisData.recommended_site && (
               <div className="legend-item">
-                <div className="legend-marker-preview legend-marker-rec">⭐</div>
+                <div className="legend-marker-preview legend-marker-rec">1</div>
                 <div className="legend-text-group">
                   <span className="legend-item-label">Recommended Site (#1)</span>
                   <span className="legend-item-sub">Top pick location pin</span>
@@ -115,13 +125,58 @@ export function MapLegend({ analysisData, isOpen = true, onToggle }) {
           {/* 4. Centroid Markers Preview */}
           {(hasRecBoundary || hasAltBoundary || hasCatchmentBoundary) && (
             <div className="legend-item">
-              <div className="legend-marker-preview legend-marker-rec">⭐</div>
+              <div className="legend-marker-preview legend-marker-rec">1</div>
               <div className="legend-text-group">
                 <span className="legend-item-label">Location Pin Markers</span>
                 <span className="legend-item-sub">Centroid pins with metrics popup</span>
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MapResultSummary({ analysisData }) {
+  const site = analysisData?.recommended_site;
+  const catchment = analysisData?.catchment;
+  if (!site && !catchment) return null;
+
+  const formatNumber = (value, digits = 0) =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? value.toLocaleString(undefined, { maximumFractionDigits: digits })
+      : 'Not available';
+
+  return (
+    <div className="map-result-summary" role="region" aria-label="Map result summary">
+      <div className="map-result-summary-title">Analysis outputs</div>
+      {site && (
+        <div className="map-result-summary-item">
+          <span>Suggested pond</span>
+          <strong>
+            {typeof site.latitude === 'number' ? site.latitude.toFixed(4) : 'N/A'},
+            {' '}
+            {typeof site.longitude === 'number' ? site.longitude.toFixed(4) : 'N/A'}
+          </strong>
+        </div>
+      )}
+      {catchment && (
+        <div className="map-result-summary-item">
+          <span>Catchment area</span>
+          <strong>{formatNumber(catchment.area_hectares, 2)} ha</strong>
+        </div>
+      )}
+      {site && (
+        <div className="map-result-summary-item">
+          <span>Expected water volume</span>
+          <strong>{formatNumber(site.storage_capacity_m3 ?? catchment?.estimated_runoff_volume_m3)} m³</strong>
+        </div>
+      )}
+      {catchment?.estimated_runoff_volume_m3 !== undefined && (
+        <div className="map-result-summary-item map-result-summary-secondary">
+          <span>Design storm runoff</span>
+          <strong>{formatNumber(catchment.estimated_runoff_volume_m3)} m³</strong>
         </div>
       )}
     </div>
@@ -242,6 +297,15 @@ function BaseLayerSync({ setSelectedBase }) {
   return null;
 }
 
+function AreaSelectionController({ radiusM, onSelect }) {
+  useMapEvents({
+    click(event) {
+      onSelect({ latitude: event.latlng.lat, longitude: event.latlng.lng, radiusM });
+    },
+  });
+  return null;
+}
+
 /**
  * MapView Component
  *
@@ -276,19 +340,43 @@ export default function MapView({
   placeholderMessage = 'Upload a contour map to see analysis results here.',
   showPlaceholder,
   showLegend = true,
-  fitBoundsOptions = { padding: [50, 50], maxZoom: 17 },
+  fitBoundsOptions = DEFAULT_FIT_BOUNDS_OPTIONS,
   scrollWheelZoom = true,
   className = '',
   children = null,
+  selectedArea = null,
+  onAreaSelect = () => {},
+  selectionRadiusM = 250,
 }) {
   // 1. Dynamically compute combined bounding box from response data or explicit bounds
   const effectiveBounds = useMemo(() => {
     if (bounds) return bounds;
+    if (selectedArea) {
+      const radius = selectedArea.radiusM || selectedArea.radius_m || selectionRadiusM;
+      const latDelta = radius / 111320;
+      const lonDelta = radius / (111320 * Math.max(0.2, Math.cos((selectedArea.latitude * Math.PI) / 180)));
+      const selectionBounds = [
+        [selectedArea.latitude - latDelta, selectedArea.longitude - lonDelta],
+        [selectedArea.latitude + latDelta, selectedArea.longitude + lonDelta],
+      ];
+      const resultBounds = analysisData ? computeCombinedResultsBounds(analysisData) : null;
+      if (!resultBounds) return selectionBounds;
+      return [
+        [
+          Math.min(selectionBounds[0][0], resultBounds[0][0]),
+          Math.min(selectionBounds[0][1], resultBounds[0][1]),
+        ],
+        [
+          Math.max(selectionBounds[1][0], resultBounds[1][0]),
+          Math.max(selectionBounds[1][1], resultBounds[1][1]),
+        ],
+      ];
+    }
     if (analysisData) {
       return computeCombinedResultsBounds(analysisData);
     }
     return null;
-  }, [bounds, analysisData]);
+  }, [bounds, analysisData, selectedArea, selectionRadiusM]);
 
   // 2. Generic initial center and zoom
   const initialCenter = center || defaultCenter;
@@ -315,11 +403,18 @@ export default function MapView({
         <span>Interactive GIS Map</span>
       </div>
 
+      <div className="map-selection-hint" role="status">
+        <span className="map-selection-hint-icon">⌖</span>
+        <span>{selectedArea ? 'Click the map to move the selected area' : 'Click the map to select a 250 m area'}</span>
+      </div>
+
+      {hasAnalysisData && <MapResultSummary analysisData={analysisData} />}
+
       {/* Empty State Overlay */}
       {isPlaceholderVisible && (
         <div className="map-placeholder-overlay" role="status" aria-live="polite">
           <div className="map-placeholder-card">
-            <span className="placeholder-icon">🗺️</span>
+            <span className="placeholder-icon" aria-hidden="true">MAP</span>
             <div className="placeholder-text-group">
               <span className="placeholder-title">Map Ready</span>
               <span className="placeholder-text">{placeholderMessage}</span>
@@ -332,6 +427,7 @@ export default function MapView({
       {showLegend && hasAnalysisData && (
         <MapLegend
           analysisData={analysisData}
+          selectedArea={selectedArea}
           isOpen={isLegendOpen}
           onToggle={() => setIsLegendOpen((prev) => !prev)}
         />
@@ -346,6 +442,7 @@ export default function MapView({
       >
         {/* Base layer control: Street, Satellite (default), Hybrid */}
         <BaseLayerSync setSelectedBase={setSelectedBase} />
+        <AreaSelectionController radiusM={selectionRadiusM} onSelect={onAreaSelect} />
         <LayersControl position="bottomright">
           <LayersControl.BaseLayer checked={selectedBase === 'Satellite'} name="Satellite">
             <>
@@ -395,6 +492,31 @@ export default function MapView({
 
         {/* Built-in Results Layer for CatchmentResponse */}
         {analysisData && <ResultsLayer data={analysisData} />}
+
+        {selectedArea && (
+          <>
+            <Circle
+              center={[selectedArea.latitude, selectedArea.longitude]}
+              radius={selectedArea.radiusM || selectedArea.radius_m || selectionRadiusM}
+              pathOptions={{
+                color: '#16a34a',
+                weight: 2,
+                dashArray: '8 6',
+                fillColor: '#86efac',
+                fillOpacity: 0.16,
+              }}
+            >
+              <Popup>
+                <strong>Selected analysis area</strong>
+                <br />
+                Click Analyze to prioritize pond sites in this area.
+              </Popup>
+            </Circle>
+            <Marker position={[selectedArea.latitude, selectedArea.longitude]}>
+              <Popup>Selected land centre</Popup>
+            </Marker>
+          </>
+        )}
 
         {/* Extensible Children for custom markers/overlays */}
         {children}

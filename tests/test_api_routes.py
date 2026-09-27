@@ -98,3 +98,43 @@ def test_analyze_contour_valid_kml():
     assert payload["input_summary"]["num_contours"] == 2
     assert payload["input_summary"]["elevation_min"] == 500.0
     assert payload["input_summary"]["elevation_max"] == 520.0
+
+
+def test_analyze_contour_selected_area_is_returned():
+    """Verify map-selected land metadata survives the API request contract."""
+    files = {
+        "file": (
+            "contours.kml",
+            io.BytesIO(SAMPLE_CONTOUR_KML.encode("utf-8")),
+            "application/vnd.google-earth.kml+xml",
+        )
+    }
+    data = {
+        "dem_resolution_m": 10.0,
+        "selected_latitude": 28.102,
+        "selected_longitude": 77.102,
+        "selected_radius_m": 250.0,
+    }
+    response = client.post("/analyzeContour", files=files, data=data)
+    assert response.status_code == 200
+    selected_area = response.json()["selected_area"]
+    assert selected_area["latitude"] == 28.102
+    assert selected_area["longitude"] == 77.102
+    assert selected_area["radius_m"] == 250.0
+    assert selected_area["area_m2"] > 0
+
+
+def test_analyze_contour_uses_bundled_dataset_without_upload():
+    """Verify map-only analysis works with the bundled demonstration contours."""
+    response = client.post(
+        "/analyzeContour",
+        data={
+            "selected_latitude": 21.2517,
+            "selected_longitude": 81.2970,
+            "selected_radius_m": 250.0,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_area"]["radius_m"] == 250.0
+    assert any("bundled demonstration contour" in note for note in payload["processing_notes"])

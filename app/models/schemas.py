@@ -62,6 +62,14 @@ class PondSiteSummary(BaseModel):
     )
 
 
+class SelectedAreaSummary(BaseModel):
+    """User-selected analysis area represented by a WGS84 centre and radius."""
+    latitude: float = Field(..., description="Selected area centre latitude")
+    longitude: float = Field(..., description="Selected area centre longitude")
+    radius_m: float = Field(..., gt=0, description="Selected analysis radius in metres")
+    area_m2: float = Field(..., gt=0, description="Selected analysis area in square metres")
+
+
 class ElevationRange(BaseModel):
     """Elevation relief metrics across the catchment basin."""
     min_m: float = Field(..., examples=[431.2], description="Lowest elevation point in catchment (meters)")
@@ -115,6 +123,9 @@ class CatchmentResponse(BaseModel):
     )
     alternative_sites: List[PondSiteSummary] = Field(
         default_factory=list, description="Ranked alternative candidate pond sites"
+    )
+    selected_area: Optional[SelectedAreaSummary] = Field(
+        None, description="User-selected map area used to prioritize candidate sites"
     )
     catchment: Optional[CatchmentSummary] = Field(
         None, description="Delineated upstream catchment contributing to recommended pond site"

@@ -83,13 +83,13 @@ export default function SiteSummaryPanel({
       <div className="panel site-summary-panel">
         <div className="panel-header">
           <div className="panel-title-group">
-            <span className="panel-icon">⭐</span>
+            <span className="panel-icon" aria-hidden="true">03</span>
             <h3 className="panel-title">Recommended Pond Location</h3>
           </div>
         </div>
         <div className="panel-body">
           <div className="empty-state">
-            <span className="empty-state-icon">📍</span>
+            <span className="empty-state-icon" aria-hidden="true">POND</span>
             <p className="empty-state-text">
               Upload a contour map to identify and rank optimal farm pond excavation sites.
             </p>
@@ -108,7 +108,7 @@ export default function SiteSummaryPanel({
       {/* Panel Header */}
       <div className="panel-header">
         <div className="panel-title-group">
-          <span className="panel-icon">⭐</span>
+          <span className="panel-icon" aria-hidden="true">03</span>
           <h3 className="panel-title">Recommended Pond Location</h3>
         </div>
         <span className="score-tier-badge score-tier-excellent">Rank #1 Top Pick</span>
@@ -220,7 +220,7 @@ export default function SiteSummaryPanel({
               onClick={() => handleFocus(recommendedSite)}
               title="Pan map view to recommended pond site"
             >
-              🎯 Focus on Recommended Site
+              Focus on recommended site
             </button>
           </div>
 
@@ -248,7 +248,7 @@ export default function SiteSummaryPanel({
                       <div key={site.site_id || `alt-${site.rank}`} className="alt-site-card">
                         <div className="alt-site-header">
                           <div className="alt-site-title">
-                            <span>📍 Candidate #{site.rank}</span>
+                            <span>Candidate #{site.rank}</span>
                             <span className="alt-site-subid">({site.site_id})</span>
                           </div>
                           <span className={`score-tier-badge ${altTier.tierClass}`}>
@@ -258,7 +258,7 @@ export default function SiteSummaryPanel({
 
                         <div className="alt-site-metrics-row">
                           <span>Area: <strong>{site.area_m2?.toLocaleString()} m²</strong></span>
-                          {site.storage_capacity_m3 ? (
+                          {site.storage_capacity_m3 !== undefined && site.storage_capacity_m3 !== null ? (
                             <span>Vol: <strong>{site.storage_capacity_m3?.toLocaleString()} m³</strong></span>
                           ) : null}
                           <span>Slope: <strong>{site.slope_deg?.toFixed(1)}°</strong></span>
@@ -271,7 +271,7 @@ export default function SiteSummaryPanel({
                             onClick={() => handleFocus(site)}
                             title={`Pan map to candidate site #${site.rank}`}
                           >
-                            🎯 Show on Map
+                            Show on map
                           </button>
                         </div>
                       </div>
