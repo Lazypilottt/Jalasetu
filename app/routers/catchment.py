@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.models.schemas import CatchmentResponse, HealthResponse
 from app.services.pipeline import analyze_contour_file, DEFAULT_PIPELINE_PARAMS
@@ -150,26 +151,45 @@ async def analyze_contour(
     curve_number: Optional[float] = Form(
         75.0, ge=30.0, le=98.0, description="SCS Runoff Curve Number for hydrological modeling."
     ),
+    selected_latitude: Optional[float] = Form(None, ge=-90.0, le=90.0),
+    selected_longitude: Optional[float] = Form(None, ge=-180.0, le=180.0),
+    selected_radius_m: Optional[float] = Form(None, ge=25.0, le=5000.0),
 ) -> CatchmentResponse:
     """
     Execute contour analysis pipeline on uploaded KML/KMZ file.
     """
-    # 1. Select uploaded file: prefer 'contour_map' form field, fall back to legacy 'file'
+    # 1. Select uploaded file: prefer 'contour_map' form field, fall back to legacy
+    # 'file'. A map-only request may use the bundled demonstration contours when
+    # a complete selected area is supplied.
     upload_file = contour_map or file
-    if upload_file is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "No file was uploaded. In Postman: set request to POST, body to form-data, "
-                "add a key named 'contour_map' of type File, and select your .kml or .kmz file."
-            ),
-        )
-
-    filename = upload_file.filename or "upload.kml"
-    ext = Path(filename).suffix.lower()
+    using_default_contours = upload_file is None
+    if using_default_contours:
+        if None in (selected_latitude, selected_longitude, selected_radius_m):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload a contour file or provide a complete selected map area.",
+            )
+        default_contour_path = Path(__file__).resolve().parents[2] / "contours_1m.kml"
+        if not default_contour_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No contour file was uploaded and the bundled fallback dataset is unavailable.",
+            )
+        filename = default_contour_path.name
+        ext = default_contour_path.suffix.lower()
+    else:
+        filename = upload_file.filename or "upload.kml"
+        ext = Path(filename).suffix.lower()
 
     # If filename has no extension, try to guess from Content-Type header
     if ext not in (".kml", ".kmz"):
+        # Preserve the content-type fallback for extensionless uploads, but
+        # reject an explicitly unsupported suffix before attempting XML parsing.
+        if ext:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format '{Path(filename).suffix}'. Only .kml and .kmz contour files are supported.",
+            )
         content_type = (upload_file.content_type or "").lower()
         if "kmz" in content_type or "zip" in content_type:
             ext = ".kmz"
@@ -195,7 +215,11 @@ async def analyze_contour(
     temp_path = Path(temp_file.name)
 
     try:
-        shutil.copyfileobj(upload_file.file, temp_file)
+        if using_default_contours:
+            with open(default_contour_path, "rb") as bundled_file:
+                shutil.copyfileobj(bundled_file, temp_file)
+        else:
+            shutil.copyfileobj(upload_file.file, temp_file)
         temp_file.flush()
         temp_file.close()
 
@@ -253,11 +277,25 @@ async def analyze_contour(
             "use_pysheds": use_pysheds,
             "design_rainfall_mm": design_rainfall_mm,
             "curve_number": curve_number,
+            "selected_latitude": selected_latitude,
+            "selected_longitude": selected_longitude,
+            "selected_radius_m": selected_radius_m,
         }
 
         # 5. Execute pipeline
         try:
-            response = analyze_contour_file(file_source=temp_path, params=params)
+            # The pipeline is CPU- and memory-heavy. Keep it off FastAPI's
+            # event loop so health checks and concurrent requests stay responsive.
+            response = await run_in_threadpool(
+                analyze_contour_file,
+                file_source=temp_path,
+                params=params,
+            )
+            if using_default_contours:
+                response.processing_notes = [
+                    "No contour upload was provided; the bundled demonstration contour dataset was used.",
+                    *response.processing_notes,
+                ]
         except Exception as e:
             logger.exception("Unhandled server exception during analyze_contour_file: %s", e)
             raise HTTPException(

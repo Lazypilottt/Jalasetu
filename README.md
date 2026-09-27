@@ -1,226 +1,327 @@
 # JalaSetu
 
-Automated terrain analysis, farm pond site selection, and catchment delineation from topographic contour maps.
+## Farm-Pond Siting and Catchment Analysis
+
+JalaSetu is a geospatial decision-support application for identifying suitable
+farm-pond locations from topographic contour data. It combines a FastAPI
+backend, a React/Leaflet web interface, and a terrain-analysis pipeline that
+constructs a digital elevation model (DEM), ranks candidate pond sites,
+delineates the upstream catchment, and estimates collectible stormwater.
+
+The application is designed for watershed planning, village-scale water
+conservation, and rapid preliminary site screening. It provides a technical
+recommendation, not a substitute for a field survey, detailed engineering
+design, or statutory approval.
 
 ---
 
-## 1. Project Overview
+## Contents
 
-JalaSetu is a geospatial system for identifying optimal farm pond excavation sites and computing upstream rainwater catchment areas from contour maps.
-
-In many rural watershed planning projects, farm pond siting is conducted ad hoc through visual inspection without quantitative terrain analysis. This frequently results in ponds placed on excessive slopes, in areas with insufficient drainage catchment, or where excavation yields poor storage efficiency.
-
-JalaSetu provides an end-to-end automated workflow:
-1. The user uploads an elevation contour map file (.kml or .kmz).
-2. The backend extracts elevation contours, constructs a Digital Elevation Model (DEM), derives terrain slope and depression metrics, identifies candidate pond sites, and delineates the upstream contributing catchment basin.
-3. The frontend displays the recommended site, alternative candidates, excavation footprint statistics, catchment boundary polygon, and processing notes on an interactive map.
+- [Features](#features)
+- [System architecture](#system-architecture)
+- [Quick start](#quick-start)
+- [Using the web application](#using-the-web-application)
+- [Analysis outputs](#analysis-outputs)
+- [API reference](#api-reference)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Distributed services](#distributed-services)
+- [Deployment](#deployment)
+- [Performance and scaling](#performance-and-scaling)
+- [Limitations](#limitations)
+- [Repository structure](#repository-structure)
+- [Engineering notes](#engineering-notes)
 
 ---
 
-## 2. Architecture
+## Features
 
-The project consists of two components:
-- **Backend (`app/`)**: A FastAPI Python service that handles geospatial parsing, raster DEM interpolation, terrain analysis, site ranking, and hydrological catchment delineation.
-- **Frontend (`frontend/`)**: A single-page web client built with React, Vite, and React-Leaflet.
+### Interactive frontend
 
-The frontend interacts with the backend over HTTP by sending `multipart/form-data` requests to the `/analyzeContour` endpoint. The API client uses the `VITE_API_BASE_URL` environment variable, which defaults to `http://127.0.0.1:8000`.
+- Upload `.kml` and `.kmz` contour files by browsing or drag-and-drop.
+- Select a 250 m radius analysis area directly on the map.
+- Analyze the selected area with an uploaded contour file or, for
+  demonstration purposes, the bundled [`contours_1m.kml`](./contours_1m.kml)
+  dataset.
+- View the recommended pond location and ranked alternatives.
+- Overlay the selected area, candidate pond footprints, recommended pond, and
+  upstream catchment on the map.
+- Review catchment area, expected storm runoff volume, pond storage capacity,
+  terrain slope, elevation range, suitability score, and processing notes.
+- Focus the map on any recommended or alternative candidate.
+- Receive clear validation, server, timeout, and processing error messages.
+
+### Terrain and hydrology pipeline
+
+- Multi-strategy KML/KMZ elevation extraction.
+- Local UTM reprojection for metric calculations.
+- Adaptive DEM interpolation using SciPy.
+- Slope, local depression, and topographic wetness analysis.
+- Connected-component candidate extraction with area, width, and shape filters.
+- Candidate ranking using weighted terrain suitability criteria.
+- Pysheds-based flow routing with a native D8 fallback.
+- SCS Curve Number runoff estimation for the delineated catchment.
+- GeoJSON boundaries for frontend visualization.
+
 ---
 
-## 3. Backend
+## System architecture
 
-### Service Modules
-
-The processing pipeline runs through modules in `app/services/` in the following sequence:
-
-1. **`kml_parser.py` (`KMLParserService`)**:
-   Parses uploaded `.kml` and `.kmz` files into GeoDataFrames in EPSG:4326. Uses a multi-strategy elevation extraction approach:
-   - `<ExtendedData>` tags (`<Data>` and `<SimpleData>`) matching elevation attribute names.
-   - `<name>` tag regex patterns (e.g. `Contour 450`, `450m`, numbers).
-   - `<description>` tag regex patterns.
-   - 3D coordinate geometry (Z-coordinate values).
-   Features lacking identifiable elevation attributes are skipped with logged warnings.
-
-2. **`dem_builder.py` (`DEMBuilderService`)**:
-   Reprojects contour lines from WGS84 (EPSG:4326) to an auto-calculated local metric UTM projection. Samples vertices and interpolates a continuous 2D raster DEM using SciPy (`scipy.interpolate.griddata` with linear/cubic methods and nearest-neighbor boundary fill). Derives data-driven grid resolution when not explicitly set. Packages output into a `DEMData` dataclass.
-
-3. **`terrain_analysis.py` (`TerrainAnalysisService`)**:
-   Calculates terrain derivatives from the DEM:
-   - Slope in degrees and percentage via finite-difference gradient.
-   - Topographic Position Index (TPI) and local depression index (0 to 100) using neighborhood window filters.
-   - Weighted composite suitability score (0 to 100) combining slope criteria and local depression factors.
-   - Binary suitability mask of valid excavation cells.
-
-4. **`pond_site.py` (`PondSiteService`)**:
-   Segments contiguous suitable raster cells using 8-connectivity connected-component labeling (`scipy.ndimage.label`). Filters candidate regions by footprint area constraints (`min_pond_area_m2`), elongation aspect ratio (`max_elongation_ratio`) to reject linear road/channel corridors, and minimum usable footprint width (`min_pond_width_m`). Computes real-world coordinates (WGS84 and UTM), average elevation, slope, shape metrics, excavation area, and suitability ranks.
-
-5. **`catchment_delineation.py` (`CatchmentDelineationService`)**:
-   Traces the upstream contributing drainage basin for the top recommended pond location. Attempts Pysheds hydrological routing (pit filling, depression resolution, D8 flow direction, flow accumulation, and stream snapping). Falls back to native D8 steepest descent with topological sort accumulation and reverse breadth-first search (BFS) if Pysheds is unavailable or fails. Vectorizes the catchment raster mask into a GeoJSON FeatureCollection polygon.
-
-6. **`pipeline.py` (`analyze_contour_file`)**:
-   Orchestrates the entire sequence from input file to structured `CatchmentResponse`. Applies configuration defaults from `DEFAULT_PIPELINE_PARAMS`, handles error recovery, triggers relaxed parameter fallback if initial criteria find no candidate sites, and logs execution notes.
-
-`app/utils/geometry.py` provides supporting functions for calculating the optimal UTM EPSG zone from longitude/latitude bounds and reprojecting GeoDataFrames.
-
-### Local Installation and Setup
-
-Prerequisites: Python 3.9 or higher.
-
-1. Navigate to the project root:
-   ```bash
-   cd JalaSetu
-   ```
-
-2. Create and activate a virtual environment:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   # On Windows: .\venv\Scripts\Activate.ps1
-   ```
-
-3. Install backend dependencies:
-   ```bash
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-4. Start the backend development server:
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-   Or run the module directly:
-   ```bash
-   python -m app.main
-   ```
-
-The backend server listens on `http://127.0.0.1:8000`.
-
-### Environment Configuration
-
-The backend runs with sensible defaults out of the box. No mandatory `.env` file is required for local execution. CORS is enabled for all origins by default in `app/main.py`.
-
-### Running Backend Tests
-
-Run all tests using pytest:
-
-```bash
-pytest tests/ -v
+```text
+React + Leaflet frontend
+          |
+          | multipart/form-data over HTTP
+          v
+FastAPI API (/analyzeContour)
+          |
+          v
+Contour parser -> DEM builder -> terrain analysis
+          |
+          v
+Pond-site ranking -> catchment delineation -> runoff estimation
+          |
+          v
+Structured CatchmentResponse + GeoJSON overlays
 ```
 
-### Test Suite Breakdown
+### Main components
 
-| Test File | Scope and Coverage |
+| Component | Responsibility |
 |---|---|
-| `tests/test_health.py` | Validates `GET /health` endpoint response code and status message. |
-| `tests/test_kml_parser.py` | Tests KML/KMZ parsing strategies (name regex, ExtendedData, 3D coordinates), feature skipping, KMZ unzipping, and UTM reprojection. |
-| `tests/test_dem_builder.py` | Tests DEM grid interpolation on synthetic conical hill data, bounds validity, GeoTIFF export, and hillshade generation. |
-| `tests/test_terrain_analysis.py` | Verifies finite-difference slope angles against analytical planar ramps, depression index on synthetic bowls, and GeoTIFF/PNG export. |
-| `tests/test_pond_site.py` | Verifies connected component extraction, centroid calculation, minimum area filtering, and linear road corridor shape rejection. |
-| `tests/test_catchment_delineation.py` | Tests watershed delineation on synthetic V-valley terrain, pour point snapping, and GeoJSON export. |
-| `tests/test_pipeline.py` | Integration test running `analyze_contour_file` on synthetic KML data. |
-| `tests/test_api_routes.py` | Tests FastAPI route validation, parameter bounds checking, invalid extension rejection, and empty file handling. |
-| `tests/test_api_e2e.py` | End-to-end test verifying full Pydantic response schemas, coordinate bounding box containment, positive catchment area, and live execution on `contours_1m.kml`. |
+| `app/` | FastAPI application, request validation, schemas, and geospatial services |
+| `frontend/` | React/Vite client and Leaflet map interface |
+| `distributed/` | Optional staged services for DEM, terrain/site ranking, and gateway processing |
+| `tests/` | Unit, integration, API, and end-to-end tests |
+| `contours_1m.kml` | Bundled demonstration contour dataset |
+
+The standard local workflow uses the FastAPI pipeline directly. The distributed
+services are optional and are intended for deployment experiments or
+stage-by-stage scaling.
 
 ---
 
-## 4. API Reference
+## Quick start
 
-Interactive documentation is available at:
-- **Swagger UI**: `http://127.0.0.1:8000/docs`
-- **ReDoc**: `http://127.0.0.1:8000/redoc`
+### Prerequisites
 
-### Endpoints Overview
+- Python 3.9 or newer
+- Node.js 18 or newer
+- npm 9 or newer
+- A modern browser with JavaScript enabled
 
-| Method | Path | Summary |
-|---|---|---|
-| `POST` | `/analyzeContour` | Upload contour map, analyze terrain, rank pond sites, and delineate catchment. |
-| `GET` | `/analyzeContour/schema` | Retrieve OpenAPI response schema documentation and example payload. |
-| `GET` | `/health` | Check operational status of the server. |
+### 1. Set up the backend
+
+From the repository root:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+Install Python dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Start the API:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+The API is available at:
+
+- Health check: <http://127.0.0.1:8000/health>
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- ReDoc: <http://127.0.0.1:8000/redoc>
+
+### 2. Set up the frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173>.
+
+The frontend defaults to `http://127.0.0.1:8000` for the API. To override it,
+create `frontend/.env`:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+### 3. Run the first analysis
+
+Choose either workflow:
+
+1. Upload `contours_1m.kml`, select an area on the map, and click
+   **Analyze selected area**.
+2. Select an area on the map and click **Analyze selected area (demo contours)**
+   without uploading a file. This uses the bundled dataset and clearly labels
+   the result as demonstration-data analysis.
+
+The bundled dataset covers approximately longitude `81.2814`–`81.3126` and
+latitude `21.2398`–`21.2636`. A selection outside that extent may produce a
+nearest-site fallback or no suitable site.
 
 ---
 
-### POST `/analyzeContour`
+## Using the web application
 
-Accepts a contour map file via `multipart/form-data` and executes the terrain analysis pipeline.
+1. Start the backend and frontend.
+2. Open the frontend in a browser.
+3. Optionally upload a KML/KMZ contour map.
+4. Click the map to place the fixed 250 m analysis circle. Click again to move
+   it.
+5. Click **Analyze selected area**.
+6. Wait for terrain interpolation and catchment delineation to finish.
+7. Review:
+   - **Suggested pond location**: coordinates, elevation, slope, footprint, and
+     suitability score.
+   - **Catchment area**: contributing area in square metres and hectares.
+   - **Expected water volume**: estimated design-storm runoff in cubic metres.
+   - **Pond storage capacity**: estimated pond storage at the design depth.
+8. Use the map overlays and candidate cards to compare locations.
 
-#### Request Form Parameters
+The sidebar has its own scroll area so all controls, results, alternatives,
+hydrology details, and processing notes remain accessible on smaller screens.
 
-| Field Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `file` | File | Yes | | KML (.kml) or KMZ (.kmz) file containing elevation contour lines. |
-| `dem_resolution_m` | float | No | Auto | DEM raster grid cell resolution in meters (0.5 to 100.0). Derived adaptively if omitted. |
-| `sample_spacing_m` | float | No | Auto | Contour vertex sampling interval in meters (0.5 to 100.0). Defaults to resolution / 2. |
-| `ideal_slope_deg` | float | No | `3.0` | Maximum ideal slope in degrees (0.0 to 45.0). Slopes below this receive 100% slope score. |
-| `max_slope_deg` | float | No | `8.0` | Upper allowable slope limit in degrees (1.0 to 60.0). Slopes above this receive 0% slope score. |
-| `neighborhood_radius_m` | float | No | Auto | Neighborhood filter radius in meters for local depression detection (5.0 to 500.0). |
-| `weight_slope` | float | No | `0.5` | Weight for slope factor in composite suitability score (0.0 to 1.0). |
-| `weight_depression` | float | No | `0.5` | Weight for depression factor in composite suitability score (0.0 to 1.0). |
-| `suitability_threshold` | float | No | `60.0` | Minimum suitability score (0.0 to 100.0) required for candidate pond sites. |
-| `min_pond_area_m2` | float | No | `200.0` | Minimum contiguous footprint in square meters for a viable pond (10.0 to 1,000,000.0). |
-| `max_pond_area_m2` | float | No | None | Optional maximum allowable pond footprint in square meters (50.0 to 10,000,000.0). |
-| `max_candidate_sites` | int | No | `5` | Maximum number of ranked candidate pond sites to return (1 to 20). |
-| `max_elongation_ratio` | float | No | `3.5` | Maximum allowable major-to-minor axis elongation ratio (1.0 to 50.0) to filter out roads and corridors. |
-| `min_pond_width_m` | float | No | Auto | Minimum allowable pond footprint width in meters (1.0 to 500.0). Derived from cell size if omitted. |
-| `snap_radius_m` | float | No | `25.0` | Search radius in meters to snap pour point to stream channel (0.0 to 200.0). |
-| `use_pysheds` | bool | No | `true` | Attempt Pysheds hydrological flow accumulation first before native D8 fallback. |
+---
 
-#### Response Schema (`CatchmentResponse`)
+## Analysis outputs
 
-The response schema matches `app/models/schemas.py`:
+### Suggested pond location
 
-| Field Name | Type | Description |
+The top-ranked candidate includes:
+
+- Latitude and longitude in WGS84.
+- Average ground elevation.
+- Average slope in degrees.
+- Composite suitability score from 0 to 100.
+- Estimated excavation footprint.
+- Design-depth storage capacity.
+- Optional pond boundary GeoJSON.
+
+### Catchment area
+
+The catchment result includes:
+
+- Boundary polygon as a GeoJSON FeatureCollection.
+- Area in square metres and hectares.
+- Average catchment slope.
+- Minimum, maximum, and relief elevation.
+- Routing method used (`flow_accumulation` or `basin_approximation`).
+
+### Expected water volume
+
+Expected water volume is reported as
+`catchment.estimated_runoff_volume_m3`. It is estimated with the SCS Curve
+Number method using the configured design rainfall and curve number. The
+response also includes runoff depth, runoff coefficient, hydrological
+feasibility, and a filling factor where available.
+
+This is a design-storm estimate. It is not a guarantee of annual yield and
+does not account for every loss mechanism, including evaporation, seepage,
+sedimentation, conveyance losses, or operational releases.
+
+### Map overlays
+
+The map renders:
+
+- The selected analysis circle.
+- The recommended pond footprint.
+- Alternative candidate footprints and markers.
+- The upstream catchment boundary.
+- Popup summaries with pond location, catchment area, storage, and expected
+  runoff volume.
+
+---
+
+## API reference
+
+Interactive API documentation is available at:
+
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- ReDoc: <http://127.0.0.1:8000/redoc>
+
+### Endpoint summary
+
+| Method | Path | Description |
 |---|---|---|
-| `status` | string | Execution status: `success`, `no_suitable_site`, `partial_success`, or `error`. |
-| `message` | string (optional) | Summary explanation of analysis results. |
-| `input_summary` | object (optional) | Summary of parsed contour inputs and DEM metadata. |
-| `input_summary.num_contours` | integer | Total number of contour features extracted from KML/KMZ. |
-| `input_summary.elevation_min` | float | Minimum elevation found in contour lines (meters). |
-| `input_summary.elevation_max` | float | Maximum elevation found in contour lines (meters). |
-| `input_summary.dem_resolution_m` | float | Interpolated DEM raster cell resolution (meters/pixel). |
-| `input_summary.utm_crs` | string (optional) | Auto-detected local UTM Projected CRS (e.g. `EPSG:32643`). |
-| `recommended_site` | object (optional) | Top-ranked recommended pond site (rank 1). |
-| `recommended_site.site_id` | string | Unique identifier for candidate site (e.g. `site_1`). |
-| `recommended_site.rank` | integer | Suitability rank (1 is highest recommendation). |
-| `recommended_site.latitude` | float | Centroid latitude in WGS84 decimal degrees. |
-| `recommended_site.longitude` | float | Centroid longitude in WGS84 decimal degrees. |
-| `recommended_site.elevation_m` | float | Average ground elevation at pond site (meters). |
-| `recommended_site.suitability_score` | float | Composite terrain suitability score (0 to 100). |
-| `recommended_site.area_m2` | float | Contiguous excavation footprint area (square meters). |
-| `recommended_site.slope_deg` | float (optional) | Average terrain slope at site (degrees). |
-| `recommended_site.boundary_geojson` | object (optional) | Suitability region boundary polygon in standard WGS84 GeoJSON FeatureCollection format. |
-| `alternative_sites` | array of objects | Ranked alternative candidate pond sites (same fields as `recommended_site` including `boundary_geojson`). |
-| `catchment` | object (optional) | Delineated upstream catchment contributing to recommended pond site. |
-| `catchment.boundary_geojson` | object (optional) | Catchment boundary polygon in standard WGS84 GeoJSON FeatureCollection format. |
-| `catchment.area_m2` | float | Catchment contributing drainage area (square meters). |
-| `catchment.area_hectares` | float | Catchment contributing drainage area (hectares). |
-| `catchment.average_slope_deg` | float | Mean ground slope across the catchment (degrees). |
-| `catchment.elevation_range_m` | object | Elevation relief metrics across the catchment basin. |
-| `catchment.elevation_range_m.min_m` | float | Lowest elevation point in catchment (meters). |
-| `catchment.elevation_range_m.max_m` | float | Highest ridge elevation in catchment (meters). |
-| `catchment.elevation_range_m.relief_m` | float | Total basin elevation relief span (`max_m - min_m`) (meters). |
-| `catchment.delineation_method` | string | Hydrological routing engine used (`flow_accumulation` or `basin_approximation`). |
-| `processing_notes` | array of strings | Execution logs, parameter choices, skipped features, and warnings. |
+| `GET` | `/health` | Returns backend availability. |
+| `GET` | `/analyzeContour/schema` | Returns the response schema, defaults, and example metadata. |
+| `POST` | `/analyzeContour` | Runs contour, terrain, pond, catchment, and runoff analysis. |
+| `POST` | `/catchment/analyzeContour` | Compatibility route for the same analysis endpoint. |
 
-#### Example Request
+### `POST /analyzeContour`
+
+The endpoint accepts `multipart/form-data`.
+
+| Field | Type | Default | Description |
+|---|---:|---:|---|
+| `file` or `contour_map` | File | — | Optional `.kml` or `.kmz` contour file. |
+| `selected_latitude` | float | — | Selected map centre latitude. |
+| `selected_longitude` | float | — | Selected map centre longitude. |
+| `selected_radius_m` | float | — | Selected radius, from 25 to 5000 m. |
+| `dem_resolution_m` | float | Auto | DEM cell resolution, 0.5–100 m. |
+| `sample_spacing_m` | float | Auto | Contour sampling interval, 0.5–100 m. |
+| `ideal_slope_deg` | float | `3.0` | Ideal pond-site slope. |
+| `max_slope_deg` | float | `8.0` | Maximum acceptable slope. Must exceed the ideal slope. |
+| `neighborhood_radius_m` | float | Auto | Local terrain-analysis radius. |
+| `weight_slope` | float | `0.35` | Slope score weight. |
+| `weight_depression` | float | `0.35` | Depression score weight. |
+| `weight_twi` | float | `0.30` | Wetness score weight. |
+| `suitability_threshold` | float | `60.0` | Minimum candidate score. |
+| `min_pond_area_m2` | float | `200.0` | Minimum candidate footprint. |
+| `max_pond_area_m2` | float | — | Optional maximum footprint. |
+| `max_candidate_sites` | integer | `5` | Number of ranked alternatives, 1–20. |
+| `max_elongation_ratio` | float | `3.5` | Shape filter for narrow corridors. |
+| `min_pond_width_m` | float | Auto | Minimum usable pond width. |
+| `pond_design_depth_m` | float | `2.0` | Design depth for storage estimation. |
+| `snap_radius_m` | float | `25.0` | Pour-point stream snapping radius. |
+| `use_pysheds` | boolean | `true` | Try Pysheds before native D8 routing. |
+| `design_rainfall_mm` | float | `100.0` | 24-hour design rainfall. |
+| `curve_number` | float | `75.0` | SCS-CN value, 30–98. |
+
+#### Upload-based request
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/analyzeContour" \
   -F "file=@contours_1m.kml" \
-  -F "dem_resolution_m=5.0" \
-  -F "ideal_slope_deg=3.0" \
-  -F "max_slope_deg=8.0" \
-  -F "min_pond_area_m2=200.0" \
-  -F "suitability_threshold=60.0"
+  -F "selected_latitude=21.2517" \
+  -F "selected_longitude=81.2970" \
+  -F "selected_radius_m=250" \
+  -F "dem_resolution_m=5"
 ```
 
-curl -X POST "http://10.1.75.51:3204/analyzeContour" \
-  -F "file=@contours_1m.kml" \
-  -F "dem_resolution_m=5.0" \
-  -F "ideal_slope_deg=3.0" \
-  -F "max_slope_deg=8.0" \
-  -F "min_pond_area_m2=200.0" \
-  -F "suitability_threshold=60.0"
+#### Map-only fallback request
 
-#### Example Response
+When no file is supplied, the request must include all three selected-area
+fields. The server then uses the bundled `contours_1m.kml` dataset:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyzeContour" \
+  -F "selected_latitude=21.2517" \
+  -F "selected_longitude=81.2970" \
+  -F "selected_radius_m=250"
+```
+
+#### Response shape
+
+The response is a `CatchmentResponse` object:
 
 ```json
 {
@@ -231,471 +332,308 @@ curl -X POST "http://10.1.75.51:3204/analyzeContour" \
     "elevation_min": 420.0,
     "elevation_max": 480.0,
     "dem_resolution_m": 5.0,
-    "utm_crs": "EPSG:32643"
+    "utm_crs": "EPSG:32644"
+  },
+  "selected_area": {
+    "latitude": 21.2517,
+    "longitude": 81.297,
+    "radius_m": 250.0,
+    "area_m2": 196349.5
   },
   "recommended_site": {
     "site_id": "site_1",
     "rank": 1,
-    "latitude": 28.553412,
-    "longitude": 77.112845,
-    "elevation_m": 431.25,
-    "suitability_score": 91.4,
-    "area_m2": 1450.0,
-    "slope_deg": 1.85,
-    "boundary_geojson": {
-      "type": "FeatureCollection",
-      "features": [
-        {
-          "type": "Feature",
-          "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-              [
-                [77.111, 28.552],
-                [77.114, 28.552],
-                [77.114, 28.555],
-                [77.111, 28.555],
-                [77.111, 28.552]
-              ]
-            ]
-          },
-          "properties": {
-            "site_id": "site_1",
-            "rank": 1,
-            "area_m2": 1450.0
-          }
-        }
-      ]
-    }
+    "latitude": 21.2518,
+    "longitude": 81.2971,
+    "suitability_score": 87.4,
+    "area_m2": 1250.0,
+    "storage_capacity_m3": 1875.0
   },
-  "alternative_sites": [
-    {
-      "site_id": "site_2",
-      "rank": 2,
-      "latitude": 28.558901,
-      "longitude": 77.11893,
-      "elevation_m": 438.5,
-      "suitability_score": 86.2,
-      "area_m2": 875.0,
-      "slope_deg": 2.4,
-      "boundary_geojson": {
-        "type": "FeatureCollection",
-        "features": [
-          {
-            "type": "Feature",
-            "geometry": {
-              "type": "Polygon",
-              "coordinates": [
-                [
-                  [77.117, 28.557],
-                  [77.12, 28.557],
-                  [77.12, 28.56],
-                  [77.117, 28.56],
-                  [77.117, 28.557]
-                ]
-              ]
-            },
-            "properties": {
-              "site_id": "site_2",
-              "rank": 2,
-              "area_m2": 875.0
-            }
-          }
-        ]
-      }
-    }
-  ],
+  "alternative_sites": [],
   "catchment": {
+    "area_m2": 42000.0,
+    "area_hectares": 4.2,
+    "estimated_runoff_volume_m3": 7380.0,
     "boundary_geojson": {
       "type": "FeatureCollection",
-      "features": [
-        {
-          "type": "Feature",
-          "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-              [
-                [77.105, 28.548],
-                [77.12, 28.548],
-                [77.12, 28.56],
-                [77.105, 28.56],
-                [77.105, 28.548]
-              ]
-            ]
-          },
-          "properties": {
-            "delineation_method": "flow_accumulation",
-            "area_m2": 184500.0,
-            "area_ha": 18.45
-          }
-        }
-      ]
-    },
-    "area_m2": 184500.0,
-    "area_hectares": 18.45,
-    "average_slope_deg": 4.82,
-    "elevation_range_m": {
-      "min_m": 431.2,
-      "max_m": 478.5,
-      "relief_m": 47.3
-    },
-    "delineation_method": "flow_accumulation"
+      "features": []
+    }
   },
-  "processing_notes": [
-    "Parsed 34 contour lines with elevations ranging from 420.0m to 480.0m.",
-    "Generated DEM grid: 340x280 cells at 5.0m resolution in EPSG:32643.",
-    "Computed terrain derivatives: mean slope=4.2°, mean suitability=58.3/100, suitable area=14.6%.",
-    "Selected top recommended pond site (site_1): score=91.4, area=1450m² at (28.55341°N, 77.11285°E).",
-    "Delineated upstream catchment using flow_accumulation: area=18.45 ha (184,500m²), elevation span=47.3m, mean slope=4.8°."
-  ]
+  "processing_notes": []
 }
 ```
 
----
-
-### GET `/analyzeContour/schema`
-
-Returns the full OpenAPI JSON schema definition for `CatchmentResponse`, default parameters, and a reference example payload.
-
-#### Example Request
-
-```bash
-curl http://127.0.0.1:8000/analyzeContour/schema
-```
+The numeric values above are illustrative. Actual values depend on the
+uploaded or bundled contours, selected area, DEM resolution, rainfall, and
+Curve Number.
 
 ---
 
-### GET `/health`
+## Configuration
 
-Operational health check endpoint.
+### Frontend
 
-#### Example Request
+Create `frontend/.env`:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+The frontend client uses a three-minute request timeout because interpolation
+and hydrological routing can be compute-intensive.
+
+### Backend CORS
+
+The backend uses an explicit origin allow-list. By default:
+
+```text
+http://localhost:5173,http://127.0.0.1:5173
+```
+
+For a deployed frontend, set:
 
 ```bash
-curl http://127.0.0.1:8000/health
+export JALASETU_CORS_ORIGINS="https://frontend.example.com"
 ```
 
-#### Example Response
+Multiple origins are comma-separated:
 
-```json
-{
-  "status": "ok",
-  "message": "Pond Catchment API is running"
-}
+```bash
+export JALASETU_CORS_ORIGINS="https://frontend.example.com,https://staging.example.com"
 ```
+
+Do not use `*` with credentialed production deployments. Keep the list limited
+to trusted frontend origins.
 
 ---
 
-## 5. Frontend
+## Testing
 
-### Capabilities
-
-The frontend allows users to:
-- Drag and drop or browse for `.kml` and `.kmz` contour map files.
-- Inspect the top recommended pond location and ranked alternative candidate sites.
-- View the contributing watershed boundary polygon overlay and candidate markers on an interactive Leaflet map.
-- Review terrain statistics including basin drainage area, elevation relief, slope, and excavation footprint.
-- Read processing notes and warnings regarding fallback routing or relaxed thresholds.
-
-### Component Breakdown
-
-Components are located in `frontend/src/components/`:
-
-- **`UploadPanel.jsx`**: Handles file drag-and-drop, format validation (.kml/.kmz), upload progress indication, parameter overrides, and error alerts.
-- **`MapView.jsx`**: Renders the Leaflet interactive map container with OpenStreetMap tiles, automatic bounding box fitting, and smooth camera panning.
-- **`ResultsLayer.jsx`**: Renders map vector overlays, including the semi-transparent catchment boundary polygon, rank 1 pond site marker, and alternative site markers with popup cards.
-- **`SiteSummaryPanel.jsx`**: Displays metrics for the top recommended pond site (score, excavation area, coordinates, elevation, slope) and includes an expandable list of alternative sites with focus triggers.
-- **`CatchmentDetailsPanel.jsx`**: Displays catchment drainage area (hectares and square meters), basin elevation range, average slope, and a routing method indicator badge.
-- **`ProcessingNotesBanner.jsx`**: Renders dismissible notices translating backend execution logs and routing fallback caveats into plain guidance.
-
-The API client in `frontend/src/api/catchmentApi.js` builds `multipart/form-data` requests, sends them to `POST /analyzeContour`, and normalizes HTTP and connection errors into structured error objects.
-
-### Local Installation and Setup
-
-Prerequisites: Node.js 18 or higher, npm 9 or higher.
-
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Configure environment variables:
-   Create a `.env` file in the `frontend/` directory (optional):
-   ```env
-   VITE_API_BASE_URL=http://127.0.0.1:8000
-   ```
-   If omitted, the API client automatically defaults to `http://127.0.0.1:8000`.
-
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-The frontend application will be available at `http://localhost:5173`.
-
-### Production Build
-
-To compile and bundle optimized static assets:
-
-```bash
-npm run build
-```
-
-The output is generated in the `frontend/dist/` directory.
-
-To preview the production build locally:
-
-```bash
-npm run preview
-```
-
----
-
-## 6. Running the Full Stack Locally
-
-Follow these steps to run both backend and frontend together:
-
-### Step 1: Start the Backend Server
-
-Open a terminal at the repository root:
+Run the complete backend suite from the repository root:
 
 ```bash
 source venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+pytest -q
 ```
 
-Confirm backend health:
+Run only API route tests:
+
 ```bash
-curl http://127.0.0.1:8000/health
+pytest tests/test_api_routes.py -q
 ```
 
-### Step 2: Start the Frontend Client
-
-Open a second terminal:
+Build the frontend:
 
 ```bash
 cd frontend
-npm run dev
+npm run build
 ```
 
-### Step 3: Test the End-to-End Workflow
+The test suite covers:
 
-1. Open `http://localhost:5173` in a web browser.
-2. Confirm the header badge displays "Waiting for Contour Upload".
-3. Upload the sample contour file `contours_1m.kml` located at the root of this repository.
-4. The system executes the analysis pipeline and renders:
-   - The delineated catchment basin polygon on the map.
-   - The top recommended pond excavation site marker.
-   - Ranked alternative candidate sites.
-   - Drainage area and slope statistics in the sidebar panels.
+- Health and schema endpoints.
+- KML/KMZ parsing and elevation extraction.
+- UTM reprojection and DEM interpolation.
+- Slope, depression, and suitability calculations.
+- Pond candidate geometry and filtering.
+- Pysheds/native D8 catchment delineation.
+- API validation and selected-area metadata.
+- Map-only bundled-contour fallback analysis.
+- End-to-end response schema and geometry checks.
 
-### Step 4: Run CLI Demo Script (Alternative)
-
-You can also run the complete analysis directly from the command line using `scripts/demo_run.py`:
+Before submitting changes, also run:
 
 ```bash
-# Run against running backend server
-python scripts/demo_run.py contours_1m.kml --mode api
-
-# Run in-process pipeline without a server
-python scripts/demo_run.py contours_1m.kml --mode direct --output-dir ./output
+git diff --check
 ```
-
-The script prints the structured JSON report and saves a composite visualization plot (`output/contours_1m_demo_visualization.png`).
 
 ---
 
-## 7. Deployment Guide
+## Distributed services
 
-### Backend Deployment
+The optional `distributed/` package separates the pipeline into stages:
 
-The backend is an ASGI application (`app.main:app`).
+| Service | Default port | Responsibility |
+|---|---:|---|
+| `distributed.sys2` | `3002` | Parse contours and build the DEM. |
+| `distributed.sys3` | `3003` | Analyze terrain and rank pond sites. |
+| `distributed.sys4` | `3000` | Gateway/orchestration service and catchment stage. |
 
-#### Production ASGI Server
+For a local distributed smoke test:
 
-Run Uvicorn with multiple workers:
+```bash
+./scripts/run_distributed.sh
+```
+
+The script starts `sys2` and `sys3`, then runs `sys4`. Configuration can be
+overridden with:
+
+```bash
+JALASETU_SYS2_URL=http://127.0.0.1:3002 \
+JALASETU_SYS3_URL=http://127.0.0.1:3003 \
+JALASETU_PORT=3000 \
+./scripts/run_distributed.sh
+```
+
+The standard frontend is configured for the FastAPI service on port 8000; point
+`VITE_API_BASE_URL` at a compatible gateway if using the distributed deployment.
+
+---
+
+## Deployment
+
+### Backend
+
+Run the ASGI application behind a process manager or reverse proxy:
+
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-Or run Gunicorn with Uvicorn workers:
-```bash
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app -b 0.0.0.0:8000
-```
+For production:
 
-#### Containerization (Dockerfile)
+- Use Linux containers or a Linux VM with GDAL, GEOS, and PROJ runtime support.
+- Set explicit `JALASETU_CORS_ORIGINS`.
+- Configure a reverse proxy upload limit appropriate for contour files.
+- Set upstream and proxy timeouts to at least 60–180 seconds.
+- Allocate sufficient memory for DEM interpolation; large, dense contours can
+  require more than 1 GB.
+- Keep temporary uploads on local ephemeral storage or a managed temporary
+  volume.
+- Monitor request duration, memory, failed analyses, and fallback rates.
 
-A production Dockerfile for the backend requires system geospatial libraries (GDAL, GEOS, PROJ) for `rasterio`, `geopandas`, and `shapely`:
+The repository includes [`scripts/deploy_to_sys4.sh`](./scripts/deploy_to_sys4.sh)
+for a systemd-based deployment on a Linux host. Review it before use because it
+updates the target checkout and requires administrative privileges.
 
-```dockerfile
-FROM python:3.10-slim
+### Frontend
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libgdal-dev \
-    gdal-bin \
-    libgeos-dev \
-    libproj-dev \
-    && rm -rf /var/lib/apt/lists/*
+Build static assets:
 
-WORKDIR /app
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY app/ ./app
-
-EXPOSE 8000
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
-```
-
-#### Hosting Platforms
-
-The backend can be hosted on:
-- **Container Services (Render, Railway, Fly.io, AWS ECS, Google Cloud Run)**: Build using the Dockerfile above. Allocate at least 1 GB to 2 GB RAM for spatial interpolation operations on large contour datasets.
-- **Linux Virtual Machine (Ubuntu/Debian on AWS EC2, DigitalOcean, Hetzner)**: Install system packages (`sudo apt install libgdal-dev gdal-bin libgeos-dev libproj-dev python3-venv`), set up a systemd service unit, and place Nginx as a reverse proxy in front of Uvicorn.
-
-### Frontend Deployment
-
-#### Building Static Assets
-
-Compile the frontend:
 ```bash
 cd frontend
-VITE_API_BASE_URL="https://api.yourdomain.com" npm run build
+VITE_API_BASE_URL="https://api.example.com" npm run build
 ```
 
-The compiled assets in `frontend/dist/` can be served by any static web server or CDN platform.
+Serve `frontend/dist/` from a CDN, Nginx, Vercel, Netlify, Cloudflare Pages, or
+another static host. Configure SPA fallback to `index.html` where required.
 
-#### Hosting Platforms
+### Deployment checklist
 
-- **Vercel / Netlify / Cloudflare Pages**: Connect the Git repository, set the root directory to `frontend`, set the build command to `npm run build`, and set the output directory to `dist`. Configure the environment variable `VITE_API_BASE_URL` to point to the deployed backend URL.
-- **Nginx / S3 / CloudFront**: Upload the contents of `frontend/dist/` to your static file root or S3 bucket, configured for single-page application (SPA) routing fallback to `index.html`.
-
-### CORS Configuration
-
-The backend must allow requests from the deployed frontend origin. In `app/main.py`, the CORS middleware is configured as:
-
-```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Replace with specific frontend domain in strict production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-For strict production security, replace `allow_origins=["*"]` with your specific frontend domain (e.g. `allow_origins=["https://jalasetu.yourdomain.com"]`).
-
-### Post-Deployment Verification Checklist
-
-1. Send a request to `GET /health` on the deployed backend URL and verify HTTP 200 with `status: "ok"`.
-2. Open the deployed frontend URL in a browser and verify that the page loads with no JavaScript console errors.
-3. Upload `contours_1m.kml` through the web interface and confirm that the API call completes and displays pond sites and catchment polygons.
-4. Verify that reverse proxies (e.g. Nginx or Cloudflare) allow file uploads up to at least 50 MB (`client_max_body_size 50M`).
-5. Verify that gateway timeouts are set to at least 60 to 120 seconds to accommodate compute-heavy interpolation on large contour files.
+1. Verify `GET /health` returns HTTP 200.
+2. Verify the deployed frontend can reach the API without CORS errors.
+3. Upload a small KML file and confirm a complete response.
+4. Test the map-only fallback inside the bundled contour extent.
+5. Confirm pond, catchment, and runoff overlays render.
+6. Check reverse-proxy upload and timeout limits.
+7. Confirm logs do not expose uploaded file contents or sensitive data.
 
 ---
 
-## 8. Known Limitations and Future Work
+## Performance and scaling
 
-### Known Limitations
+The analysis pipeline is CPU- and memory-intensive. The API executes it in a
+threadpool so the FastAPI event loop remains responsive to health checks and
+other requests.
 
-- **DEM Resolution and Extent**: Interpolating large geographic extents at high resolution (e.g. sub-meter) increases memory usage and computation time. The system uses adaptive resolution (clamping between 1.0m and 50.0m) to balance detail with performance.
-- **Hydrological Routing Fallbacks**: When continuous flow routing through Pysheds encounters complex sink depressions or flat terrain, the pipeline falls back to native D8 breadth-first search (`basin_approximation`). This may produce simplified watershed boundaries in very flat terrain.
-- **No Rainfall and Infiltration Modeling**: The current implementation computes topographic suitability and geometric catchment drainage area. It does not model precipitation time-series, soil infiltration rates, evaporation losses, or runoff volume hydrographs.
-- **Contour Input Quality**: The accuracy of DEM interpolation depends on the density and vertical interval of the input contour lines. Coarse or sparse contour maps will produce smoother, less defined drainage channels.
+For reliable operation:
 
-### Future Work
+- Keep DEM resolution proportional to the input extent.
+- Cap upload size at the reverse proxy and application boundary.
+- Limit concurrent heavy analyses with a queue or worker pool.
+- Use multiple API workers for independent requests, subject to available RAM.
+- Prefer the native fallback only when Pysheds is unavailable or fails.
+- Cache repeated analyses by a content hash and parameter set where appropriate.
+- Use the distributed stages when DEM construction, terrain ranking, and
+  catchment work need independent scaling.
+- Return bounded candidate lists using `max_candidate_sites`.
+- Measure p50/p95 latency and peak memory with representative contour files.
 
-- **Runoff Yield Estimation**: Integrate rainfall statistics (e.g. IMD or CHIRPS datasets) to compute estimated monsoon runoff harvest volumes in cubic meters.
-- **Soil and Infiltration Layers**: Incorporate soil texture data to assess pond percolation rates and determine lining requirements.
-- **Earthwork Volume Calculation**: Compute cut-and-fill excavation volumes and embankment dimensions for candidate pond sites.
+The map-only fallback is intentionally a demonstration mode. It reuses the
+bundled terrain dataset rather than inventing elevation values from
+coordinates, and it reports that choice in `processing_notes`.
 
 ---
 
-## 9. Repository Structure
+## Limitations
+
+- Results depend on contour density, elevation labels, vertical interval, and
+  geometric quality.
+- DEM interpolation can smooth narrow ridges, channels, and local depressions.
+- Catchment delineation can be simplified on flat or noisy terrain.
+- SCS-CN runoff is a design-storm estimate, not an annual water-balance model.
+- Soil infiltration, evaporation, sedimentation, groundwater interaction, and
+  detailed embankment design are not fully modeled.
+- The bundled fallback dataset is suitable for demonstration and testing, not
+  for final site approval.
+- A field survey, soil investigation, land-ownership review, and engineering
+  validation are required before construction.
+
+### Future improvements
+
+- Rainfall frequency and seasonal time-series integration.
+- Soil, land-cover, infiltration, and evapotranspiration layers.
+- Cut-and-fill earthwork and embankment design.
+- Persistent job queues and progress reporting for very large uploads.
+- Authentication, audit logging, and multi-user project management.
+- Tile-based or cloud-native terrain processing for regional-scale analysis.
+
+---
+
+## Repository structure
 
 ```text
 JalaSetu/
-├── README.md                              # Main project documentation
-├── requirements.txt                      # Python backend dependencies
-├── contours_1m.kml                       # Sample contour dataset (1m interval)
-│
-├── app/                                  # FastAPI backend source
-│   ├── __init__.py
-│   ├── main.py                           # Application entrypoint & middleware
-│   │
-│   ├── models/                           # Pydantic schemas & contracts
-│   │   ├── __init__.py
-│   │   └── schemas.py                    # Request and response models
-│   │
-│   ├── routers/                          # API route definitions
-│   │   ├── __init__.py
-│   │   └── catchment.py                  # /analyzeContour & /health endpoints
-│   │
-│   ├── services/                         # Core geospatial pipeline services
-│   │   ├── __init__.py
-│   │   ├── kml_parser.py                 # KML/KMZ extraction & elevation parsing
-│   │   ├── dem_builder.py                # UTM reprojection & DEM interpolation
-│   │   ├── terrain_analysis.py           # Slope, depression, & suitability scoring
-│   │   ├── pond_site.py                  # Candidate site extraction & ranking
-│   │   ├── catchment_delineation.py      # Watershed routing & GeoJSON vectorization
-│   │   └── pipeline.py                   # End-to-end pipeline orchestrator
-│   │
-│   └── utils/                            # Geospatial helper utilities
-│       ├── __init__.py
-│       └── geometry.py                   # UTM zone detection & reprojection helpers
-│
-├── frontend/                             # React Vite web client
-│   ├── index.html                        # HTML entrypoint
-│   ├── package.json                      # NPM dependencies & build scripts
-│   ├── package-lock.json
-│   ├── vite.config.js                    # Vite configuration
-│   │
-│   └── src/
-│       ├── App.jsx                       # Main application component & state
-│       ├── index.css                     # Global styles & layout
-│       ├── main.jsx                      # React DOM mounting entrypoint
-│       │
-│       ├── api/                          # Backend API client
-│       │   ├── catchmentApi.d.ts         # TypeScript type definitions
-│       │   └── catchmentApi.js           # Axios client & error normalization
-│       │
-│       └── components/                   # Modular UI components
-│           ├── CatchmentDetailsPanel.jsx # Catchment statistics & hydrology metrics
-│           ├── MapView.jsx               # React-Leaflet map view container
-│           ├── ProcessingNotesBanner.jsx # Notice banner for processing logs & caveats
-│           ├── ResultsLayer.jsx          # Vector layers for sites & watershed polygon
-│           ├── SiteSummaryPanel.jsx      # Top site summary & alternative candidate list
-│           └── UploadPanel.jsx           # Drag-and-drop file upload interface
-│
+├── app/
+│   ├── main.py                         # FastAPI entrypoint and CORS
+│   ├── models/schemas.py               # Request/response models
+│   ├── routers/catchment.py            # Analysis and schema routes
+│   ├── services/
+│   │   ├── kml_parser.py               # KML/KMZ parsing
+│   │   ├── dem_builder.py              # UTM reprojection and DEM creation
+│   │   ├── terrain_analysis.py         # Slope, depression, suitability
+│   │   ├── pond_site.py                # Candidate extraction and ranking
+│   │   ├── catchment_delineation.py   # Flow routing and runoff
+│   │   └── pipeline.py                 # End-to-end orchestration
+│   └── utils/geometry.py               # Geospatial helper functions
+├── distributed/
+│   ├── sys2.py                         # DEM stage
+│   ├── sys3.py                         # Terrain/site stage
+│   ├── sys4.py                         # Gateway/catchment stage
+│   └── stage_payloads.py               # Serializable stage contracts
+├── frontend/
+│   ├── src/App.jsx                     # Application state and workflow
+│   ├── src/api/catchmentApi.js         # Axios API client
+│   └── src/components/                 # Upload, map, result panels
 ├── scripts/
-│   └── demo_run.py                       # CLI demo runner & visualization exporter
-│
-├── output/                               # Default directory for exported test artifacts
-│   ├── contours_1m_analysis_response.json
-│   └── contours_1m_demo_visualization.png
-│
-└── tests/                                # Backend test suite (pytest)
-    ├── __init__.py
-    ├── test_api_e2e.py                   # End-to-end API integration tests
-    ├── test_api_routes.py                # FastAPI route validation tests
-    ├── test_catchment_delineation.py     # Watershed delineation tests
-    ├── test_dem_builder.py               # DEM builder & GeoTIFF export tests
-    ├── test_health.py                    # Health check endpoint test
-    ├── test_kml_parser.py                # KML/KMZ parser unit tests
-    ├── test_pipeline.py                  # Pipeline integration tests
-    ├── test_pond_site.py                 # Pond siting algorithm tests
-    └── test_terrain_analysis.py          # Slope & depression index tests
+│   ├── demo_run.py                     # Direct/API demonstration runner
+│   ├── run_distributed.sh              # Local distributed smoke test
+│   └── deploy_to_sys4.sh               # Linux systemd deployment helper
+├── tests/                              # Backend test suite
+├── contours_1m.kml                     # Bundled demonstration contours
+├── requirements.txt                    # Python dependencies
+└── main.md                             # Project report source
 ```
+
+---
+
+## Engineering notes
+
+- Keep uploaded files temporary and delete them after processing.
+- Validate file suffixes, archive integrity, XML structure, and numeric bounds
+  before starting expensive processing.
+- Do not expose internal filesystem paths in API errors.
+- Treat `processing_notes` as part of the user-facing explainability layer.
+- Preserve GeoJSON in EPSG:4326 for browser map interoperability.
+- Use metric projected coordinates internally for distances, areas, and raster
+  calculations.
+- Validate all production changes with the backend tests, frontend build, and
+  `git diff --check`.
+
+---
+
+## License and project status
+
+This repository is an academic/project implementation intended for
+demonstration and preliminary planning. Add the applicable project license
+before distributing it as a public product.

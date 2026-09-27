@@ -2,6 +2,8 @@
 FastAPI application entrypoint for Pond Catchment Analysis API.
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import catchment
@@ -36,10 +38,20 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Enable CORS for web frontend clients and local tooling
+# Development remains convenient, while production can provide a comma-
+# separated allow-list instead of using a wildcard with credentials enabled.
+configured_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "JALASETU_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=configured_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

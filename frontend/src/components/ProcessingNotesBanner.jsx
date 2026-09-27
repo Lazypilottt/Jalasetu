@@ -193,7 +193,7 @@ export default function ProcessingNotesBanner({ status, notes = [], response }) 
       {/* Banner Header */}
       <div className="notes-header">
         <div className="notes-title-group">
-          <span className="notes-icon">{isWarning ? '⚠️' : 'ℹ️'}</span>
+          <span className="notes-icon" aria-hidden="true">{isWarning ? '!' : 'i'}</span>
           <span className="notes-title">{title}</span>
         </div>
         <button
@@ -203,7 +203,7 @@ export default function ProcessingNotesBanner({ status, notes = [], response }) 
           title="Dismiss notice"
           aria-label="Dismiss notice"
         >
-          ✕
+          Close
         </button>
       </div>
 

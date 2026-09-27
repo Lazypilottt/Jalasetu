@@ -14,7 +14,7 @@ export function getMethodTrustMetadata(method) {
       trustBadge: 'High Precision',
       bannerClass: 'trust-banner-high',
       badgeClass: 'badge-trust-high',
-      icon: '🌊',
+      icon: 'FLOW',
       description:
         'Continuous terrain flow routing model. Traces physical rainwater paths from surrounding ridges down to the pond excavation site.',
       advice: 'Reliable for volumetric pond capacity planning and watershed civil engineering calculations.',
@@ -26,7 +26,7 @@ export function getMethodTrustMetadata(method) {
     trustBadge: 'Simplified Estimate',
     bannerClass: 'trust-banner-approx',
     badgeClass: 'badge-trust-approx',
-    icon: '⚠️',
+    icon: 'EST',
     description:
       'Topographic basin approximation. Estimates uphill drainage area using local elevation gradients.',
     advice:
@@ -51,13 +51,13 @@ export default function CatchmentDetailsPanel({ catchment = null }) {
       <div className="panel catchment-panel">
         <div className="panel-header">
           <div className="panel-title-group">
-            <span className="panel-icon">🌊</span>
+            <span className="panel-icon" aria-hidden="true">02</span>
             <h3 className="panel-title">Catchment Hydrology</h3>
           </div>
         </div>
         <div className="panel-body">
           <div className="empty-state">
-            <span className="empty-state-icon">🌊</span>
+            <span className="empty-state-icon" aria-hidden="true">CATCHMENT</span>
             <p className="empty-state-text">
               Upstream watershed boundary and runoff drainage metrics will appear here once contour analysis is complete.
             </p>
@@ -78,21 +78,21 @@ export default function CatchmentDetailsPanel({ catchment = null }) {
 
   const getFeasibilityBadge = (status) => {
     if (status === 'optimal') {
-      return { label: 'Optimal Sizing', badgeClass: 'badge-trust-high', icon: '✅' };
+      return { label: 'Optimal Sizing', badgeClass: 'badge-trust-high', icon: 'OK' };
     }
     if (status === 'low_yield_risk') {
-      return { label: 'Low Runoff Risk', badgeClass: 'badge-trust-approx', icon: '⚠️' };
+      return { label: 'Low Runoff Risk', badgeClass: 'badge-trust-approx', icon: '!' };
     }
     if (status === 'high_flow_excess') {
-      return { label: 'Spillway Required', badgeClass: 'badge-trust-approx', icon: '🌊' };
+      return { label: 'Spillway Required', badgeClass: 'badge-trust-approx', icon: '!' };
     }
-    return { label: 'Evaluated', badgeClass: 'badge-trust-high', icon: '💧' };
+    return { label: 'Evaluated', badgeClass: 'badge-trust-high', icon: 'OK' };
   };
 
   const getSiltationBadge = (risk) => {
-    if (risk === 'low') return { label: 'Low Siltation Risk', badgeClass: 'badge-trust-high', icon: '🛡️' };
-    if (risk === 'moderate') return { label: 'Moderate Siltation Risk', badgeClass: 'badge-trust-approx', icon: '⚠️' };
-    return { label: 'High Siltation Risk', badgeClass: 'score-tier-marginal', icon: '🚨' };
+    if (risk === 'low') return { label: 'Low Siltation Risk', badgeClass: 'badge-trust-high', icon: 'OK' };
+    if (risk === 'moderate') return { label: 'Moderate Siltation Risk', badgeClass: 'badge-trust-approx', icon: '!' };
+    return { label: 'High Siltation Risk', badgeClass: 'score-tier-marginal', icon: '!' };
   };
 
   const feasBadge = getFeasibilityBadge(catchment.hydrological_feasibility);
@@ -103,7 +103,7 @@ export default function CatchmentDetailsPanel({ catchment = null }) {
       {/* Panel Header */}
       <div className="panel-header">
         <div className="panel-title-group">
-          <span className="panel-icon">🌊</span>
+          <span className="panel-icon" aria-hidden="true">02</span>
           <h3 className="panel-title">Catchment Hydrology</h3>
         </div>
         <span className={`badge ${methodMeta.badgeClass}`}>{methodMeta.trustBadge}</span>
@@ -121,7 +121,7 @@ export default function CatchmentDetailsPanel({ catchment = null }) {
                 {catchment.area_m2?.toLocaleString()} m² of natural runoff watershed
               </span>
             </div>
-            <div className="hero-water-drop-icon">💧</div>
+            <div className="hero-water-drop-icon" aria-hidden="true">RUNOFF</div>
           </div>
 
           {/* Key Hydrological Metrics Grid */}

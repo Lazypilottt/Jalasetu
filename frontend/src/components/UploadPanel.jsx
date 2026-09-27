@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { analyzeContourFile } from '../api/catchmentApi';
 
 /**
@@ -11,7 +11,7 @@ function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
@@ -68,6 +68,8 @@ export default function UploadPanel({
   onError,
   analyzeContourFn = analyzeContourFile,
   params = {},
+  analysisRequestToken = 0,
+  allowDefaultContour = false,
 }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'error' | 'success'
@@ -75,6 +77,7 @@ export default function UploadPanel({
   const [isDragging, setIsDragging] = useState(false);
 
   const fileInputRef = useRef(null);
+  const previousAnalysisRequestToken = useRef(analysisRequestToken);
   const isLoading = status === 'loading';
 
   /**
@@ -181,10 +184,12 @@ export default function UploadPanel({
    * Dispatches the analysis API call.
    */
   const handleAnalyze = async () => {
-    if (!selectedFile || isLoading) return;
+    if ((!selectedFile && !allowDefaultContour) || isLoading) return;
 
     // Validate before submit
-    const validation = validateContourFile(selectedFile);
+    const validation = selectedFile
+      ? validateContourFile(selectedFile)
+      : { valid: true, message: null };
     if (!validation.valid) {
       const errPayload = { status: 400, message: validation.message };
       setError(errPayload);
@@ -204,10 +209,11 @@ export default function UploadPanel({
       if (typeof onLoadingChange === 'function') onLoadingChange(false);
 
       // Lift result to parent
+      // Prefer the current callback. The legacy alias is only a fallback so
+      // consumers that pass both do not process one response twice.
       if (typeof onAnalysisComplete === 'function') {
         onAnalysisComplete(response);
-      }
-      if (typeof onUpload === 'function') {
+      } else if (typeof onUpload === 'function') {
         onUpload(response);
       }
     } catch (err) {
@@ -216,11 +222,18 @@ export default function UploadPanel({
         status: typeof err.status === 'number' ? err.status : 0,
         message: err.message || 'Something went wrong analyzing the file. Please try again.',
       };
+
       setError(normalizedErr);
       if (typeof onLoadingChange === 'function') onLoadingChange(false);
       if (typeof onError === 'function') onError(normalizedErr);
     }
   };
+
+  useEffect(() => {
+    if (analysisRequestToken === previousAnalysisRequestToken.current) return;
+    previousAnalysisRequestToken.current = analysisRequestToken;
+    handleAnalyze();
+  }, [analysisRequestToken]);
 
   /**
    * Returns a concise human-readable error badge title.
@@ -239,7 +252,7 @@ export default function UploadPanel({
       {/* Panel Header */}
       <div className="panel-header">
         <div className="panel-title-group">
-          <span className="panel-icon">📁</span>
+          <span className="panel-icon" aria-hidden="true">01</span>
           <h3 className="panel-title">Upload Contour Map</h3>
         </div>
       </div>
@@ -274,7 +287,7 @@ export default function UploadPanel({
               }
             }}
           >
-            <div className="dropzone-icon">📥</div>
+            <div className="dropzone-icon" aria-hidden="true">KML</div>
             <p className="dropzone-primary-text">
               {isDragging ? 'Drop your contour file here' : 'Drag & drop your .kml or .kmz contour file here'}
             </p>
@@ -299,7 +312,7 @@ export default function UploadPanel({
         {selectedFile && (
           <div className="selected-file-card">
             <div className="file-info-group">
-              <span className="file-icon">🗺️</span>
+              <span className="file-icon" aria-hidden="true">FILE</span>
               <div className="file-details">
                 <span className="file-name" title={selectedFile.name}>
                   {selectedFile.name}
@@ -327,7 +340,7 @@ export default function UploadPanel({
                 disabled={isLoading}
                 title="Remove selected file"
               >
-                ✕
+                Remove
               </button>
             </div>
           </div>
@@ -356,7 +369,7 @@ export default function UploadPanel({
           <div className="error-banner" role="alert">
             <div className="error-banner-top">
               <div className="error-icon-title">
-                <span className="error-icon">⚠️</span>
+                <span className="error-icon" aria-hidden="true">!</span>
                 <span className="error-title">Analysis Notice</span>
                 <span className="error-badge">{getErrorBadgeText(error)}</span>
               </div>
@@ -367,7 +380,7 @@ export default function UploadPanel({
                 title="Dismiss error message"
                 aria-label="Dismiss error"
               >
-                ✕
+                Close
               </button>
             </div>
             <p className="error-message">{error.message}</p>
@@ -380,7 +393,7 @@ export default function UploadPanel({
                   type="button"
                   onClick={handleAnalyze}
                 >
-                  🔄 Retry Analysis
+                  Retry analysis
                 </button>
               </div>
             )}
@@ -402,9 +415,9 @@ export default function UploadPanel({
                   Analyzing Terrain...
                 </>
               ) : error ? (
-                '🔄 Retry Analysis'
+                'Retry analysis'
               ) : (
-                '🚀 Analyze Terrain & Catchment'
+                'Analyze terrain & catchment'
               )}
             </button>
           </div>

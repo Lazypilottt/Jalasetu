@@ -254,19 +254,33 @@ class DEMBuilderService:
             crs_str,
         )
 
-        # 3. Dense point sampling along contour lines
+        # 3. Sample contour lines without allowing very large KMLs to create an
+        # oversized Delaunay triangulation inside scipy.interpolate.griddata.
+        max_points_per_feature = max(8, 50000 // max(1, len(gdf_utm)))
         pts_list: List[Tuple[float, float, float]] = []
         for _, row in gdf_utm.iterrows():
             geom = row["geometry"]
             elev = float(row["elevation"])
             if geom is not None and not geom.is_empty:
                 sampled = _sample_points_along_geometry(geom, elev, sample_spacing)
+                if len(sampled) > max_points_per_feature:
+                    sample_indices = np.linspace(
+                        0,
+                        len(sampled) - 1,
+                        max_points_per_feature,
+                        dtype=np.intp,
+                    )
+                    sampled = [sampled[index] for index in sample_indices]
                 pts_list.extend(sampled)
 
         if not pts_list:
             raise ValueError("No valid points could be sampled from contour geometries.")
 
         pts_array = np.array(pts_list, dtype=np.float64)
+        # Repeated vertices and samples do not improve interpolation but do
+        # increase triangulation memory substantially.
+        _, unique_indices = np.unique(pts_array[:, :2], axis=0, return_index=True)
+        pts_array = pts_array[np.sort(unique_indices)]
         x_pts = pts_array[:, 0]
         y_pts = pts_array[:, 1]
         z_pts = pts_array[:, 2]

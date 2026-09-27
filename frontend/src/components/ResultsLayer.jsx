@@ -14,7 +14,7 @@ export const createRecommendedPondIcon = () =>
       <div class="custom-marker marker-recommended">
         <div class="marker-pin marker-pin-recommended">
           <div class="marker-pin-inner">
-            <span class="marker-recommended-star">⭐</span>
+            <span class="marker-recommended-star">1</span>
           </div>
         </div>
         <div class="marker-badge-recommended">Top Pick #1</div>
@@ -255,7 +255,7 @@ export default function ResultsLayer({ data = null }) {
               <div class="popup-card">
                 <div class="popup-header">
                   <div class="popup-title-group">
-                    <span class="popup-title-icon">🌊</span>
+                    <span class="popup-title-icon">02</span>
                     <span class="popup-title">Watershed Drainage Area</span>
                   </div>
                   <span class="popup-badge popup-badge-catchment">${methodLabel}</span>
@@ -266,7 +266,11 @@ export default function ResultsLayer({ data = null }) {
                 <div class="popup-stats-grid">
                   <div class="popup-stat">
                     <span class="popup-stat-label">Catchment Area</span>
-                    <span class="popup-stat-val">${catchment.area_hectares ? catchment.area_hectares.toFixed(2) : 'N/A'} ha (${catchment.area_m2 ? catchment.area_m2.toLocaleString() : 'N/A'} m²)</span>
+                    <span class="popup-stat-val">${typeof catchment.area_hectares === 'number' ? catchment.area_hectares.toFixed(2) : 'N/A'} ha (${typeof catchment.area_m2 === 'number' ? catchment.area_m2.toLocaleString() : 'N/A'} m²)</span>
+                  </div>
+                  <div class="popup-stat">
+                    <span class="popup-stat-label">Expected Water Volume</span>
+                    <span class="popup-stat-val">${typeof catchment.estimated_runoff_volume_m3 === 'number' ? `${catchment.estimated_runoff_volume_m3.toLocaleString()} m³` : 'N/A'}</span>
                   </div>
                   <div class="popup-stat">
                     <span class="popup-stat-label">Mean Basin Slope</span>
@@ -309,7 +313,7 @@ export default function ResultsLayer({ data = null }) {
                   <div class="popup-card">
                     <div class="popup-header">
                       <div class="popup-title-group">
-                        <span class="popup-title-icon">📍</span>
+                        <span class="popup-title-icon">ALT</span>
                         <span class="popup-title">Alternative Footprint #${siteRank}</span>
                       </div>
                       <span class="popup-badge popup-badge-alternative">Candidate</span>
@@ -359,7 +363,7 @@ export default function ResultsLayer({ data = null }) {
               <div class="popup-card">
                 <div class="popup-header">
                   <div class="popup-title-group">
-                    <span class="popup-title-icon">⭐</span>
+                    <span class="popup-title-icon">01</span>
                     <span class="popup-title">Recommended Pond Footprint</span>
                   </div>
                   <span class="popup-badge popup-badge-recommended">Top Pick #1</span>
@@ -371,6 +375,10 @@ export default function ResultsLayer({ data = null }) {
                   <div class="popup-stat">
                     <span class="popup-stat-label">Pond Footprint</span>
                     <span class="popup-stat-val">${recommended_site.area_m2 ? `${recommended_site.area_m2.toLocaleString()} m²` : 'N/A'}</span>
+                  </div>
+                  <div class="popup-stat">
+                    <span class="popup-stat-label">Expected Water Volume</span>
+                    <span class="popup-stat-val">${typeof recommended_site.storage_capacity_m3 === 'number' ? `${recommended_site.storage_capacity_m3.toLocaleString()} m³` : 'N/A'}</span>
                   </div>
                   <div class="popup-stat">
                     <span class="popup-stat-label">Suitability</span>
@@ -402,7 +410,7 @@ export default function ResultsLayer({ data = null }) {
             <div className="popup-card">
               <div className="popup-header">
                 <div className="popup-title-group">
-                  <span className="popup-title-icon">⭐</span>
+                  <span className="popup-title-icon">01</span>
                   <span className="popup-title">Recommended Pond Location</span>
                 </div>
                 <span className="popup-badge popup-badge-recommended">Top Pick #1</span>
@@ -428,11 +436,11 @@ export default function ResultsLayer({ data = null }) {
                 </div>
                 <div className="popup-stat">
                   <span className="popup-stat-label">Ground Slope</span>
-                  <span className="popup-stat-val">${typeof recommended_site.slope_deg === 'number' ? `${recommended_site.slope_deg.toFixed(1)}°` : 'N/A'}</span>
+                  <span className="popup-stat-val">{typeof recommended_site.slope_deg === 'number' ? `${recommended_site.slope_deg.toFixed(1)}°` : 'N/A'}</span>
                 </div>
                 <div className="popup-stat">
                   <span className="popup-stat-label">Coordinates</span>
-                  <span className="popup-stat-val">${recommended_site.latitude.toFixed(4)}° N, ${recommended_site.longitude.toFixed(4)}° E</span>
+                  <span className="popup-stat-val">{recommended_site.latitude.toFixed(4)}° N, {recommended_site.longitude.toFixed(4)}° E</span>
                 </div>
               </div>
             </div>
@@ -456,7 +464,7 @@ export default function ResultsLayer({ data = null }) {
                 <div className="popup-card">
                   <div className="popup-header">
                     <div className="popup-title-group">
-                      <span className="popup-title-icon">📍</span>
+                      <span className="popup-title-icon">ALT</span>
                       <span className="popup-title">Candidate Location #{siteRank}</span>
                     </div>
                     <span className="popup-badge popup-badge-alternative">Alternative</span>
@@ -478,15 +486,15 @@ export default function ResultsLayer({ data = null }) {
                     </div>
                     <div className="popup-stat">
                       <span className="popup-stat-label">Ground Elevation</span>
-                      <span className="popup-stat-val">${typeof site.elevation_m === 'number' ? `${site.elevation_m.toFixed(1)} m` : 'N/A'}</span>
+                      <span className="popup-stat-val">{typeof site.elevation_m === 'number' ? `${site.elevation_m.toFixed(1)} m` : 'N/A'}</span>
                     </div>
                     <div className="popup-stat">
                       <span className="popup-stat-label">Ground Slope</span>
-                      <span className="popup-stat-val">${typeof site.slope_deg === 'number' ? `${site.slope_deg.toFixed(1)}°` : 'N/A'}</span>
+                      <span className="popup-stat-val">{typeof site.slope_deg === 'number' ? `${site.slope_deg.toFixed(1)}°` : 'N/A'}</span>
                     </div>
                     <div className="popup-stat">
                       <span className="popup-stat-label">Coordinates</span>
-                      <span className="popup-stat-val">${site.latitude.toFixed(4)}° N, ${site.longitude.toFixed(4)}° E</span>
+                      <span className="popup-stat-val">{site.latitude.toFixed(4)}° N, {site.longitude.toFixed(4)}° E</span>
                     </div>
                   </div>
                 </div>
