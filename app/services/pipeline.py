@@ -26,6 +26,7 @@ from app.models.schemas import (
     PondSiteSummary,
     CatchmentSummary,
     ElevationRange,
+    SelectedAreaSummary,
 )
 from app.services.kml_parser import KMLParserService
 from app.services.dem_builder import DEMBuilderService
@@ -88,6 +89,20 @@ def analyze_contour_file(
         config.update(params)
 
     processing_notes: List[str] = []
+    selected_area = None
+    selected_lat = config.get("selected_latitude")
+    selected_lon = config.get("selected_longitude")
+    selected_radius = config.get("selected_radius_m")
+    if selected_lat is not None and selected_lon is not None and selected_radius is not None:
+        selected_area = SelectedAreaSummary(
+            latitude=float(selected_lat),
+            longitude=float(selected_lon),
+            radius_m=float(selected_radius),
+            area_m2=round(3.141592653589793 * float(selected_radius) ** 2, 1),
+        )
+        processing_notes.append(
+            f"Prioritizing candidate sites within the selected {float(selected_radius):.0f}m map radius."
+        )
 
     # =========================================================================
     # Step 1: KML / KMZ Parsing
@@ -113,6 +128,12 @@ def analyze_contour_file(
     num_contours = len(contours_gdf)
     min_contour_elev = float(contours_gdf["elevation"].min())
     max_contour_elev = float(contours_gdf["elevation"].max())
+    # Candidate centroids can land a fraction of a cell beyond a contour
+    # boundary after reprojection/interpolation. Keep public WGS84 coordinates
+    # within the input extent while retaining the precise UTM pour point.
+    input_min_lon, input_min_lat, input_max_lon, input_max_lat = (
+        float(value) for value in contours_gdf.total_bounds
+    )
     processing_notes.append(
         f"Parsed {num_contours} contour lines with elevations ranging from {min_contour_elev:.1f}m to {max_contour_elev:.1f}m."
     )
@@ -259,13 +280,32 @@ def analyze_contour_file(
             processing_notes=processing_notes,
         )
 
+    # When the user selected an area, prefer candidates inside it and otherwise
+    # return the nearest terrain-supported candidate as an explicit fallback.
+    if selected_area is not None:
+        def distance_to_selection(candidate):
+            d_lat = (candidate.latitude - selected_area.latitude) * 111_320.0
+            d_lon = (candidate.longitude - selected_area.longitude) * 111_320.0
+            return (d_lat * d_lat + d_lon * d_lon) ** 0.5
+
+        nearby = [candidate for candidate in candidates
+                  if distance_to_selection(candidate) <= selected_area.radius_m]
+        candidates = sorted(nearby or candidates, key=distance_to_selection)
+        processing_notes.append(
+            f"Found {len(nearby)} candidate site(s) inside the selected area."
+            if nearby
+            else "No candidate fell inside the selected area; showing the nearest terrain-supported site."
+        )
+        for rank, candidate in enumerate(candidates, start=1):
+            candidate.rank = rank
+
     # Format recommended site and alternatives
     top_cand = candidates[0]
     recommended_site = PondSiteSummary(
         site_id=top_cand.site_id,
         rank=top_cand.rank,
-        latitude=round(top_cand.latitude, 6),
-        longitude=round(top_cand.longitude, 6),
+        latitude=min(max(round(top_cand.latitude, 6), input_min_lat), input_max_lat),
+        longitude=min(max(round(top_cand.longitude, 6), input_min_lon), input_max_lon),
         elevation_m=round(top_cand.mean_elevation, 2),
         suitability_score=round(top_cand.mean_suitability, 1),
         area_m2=round(top_cand.area_m2, 1),
@@ -285,8 +325,8 @@ def analyze_contour_file(
             PondSiteSummary(
                 site_id=cand.site_id,
                 rank=cand.rank,
-                latitude=round(cand.latitude, 6),
-                longitude=round(cand.longitude, 6),
+                latitude=min(max(round(cand.latitude, 6), input_min_lat), input_max_lat),
+                longitude=min(max(round(cand.longitude, 6), input_min_lon), input_max_lon),
                 elevation_m=round(cand.mean_elevation, 2),
                 suitability_score=round(cand.mean_suitability, 1),
                 area_m2=round(cand.area_m2, 1),
@@ -392,6 +432,7 @@ def analyze_contour_file(
         input_summary=input_summary,
         recommended_site=recommended_site,
         alternative_sites=alternative_sites,
+        selected_area=selected_area,
         catchment=catchment_summary,
         processing_notes=processing_notes,
     )

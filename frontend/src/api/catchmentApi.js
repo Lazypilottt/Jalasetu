@@ -105,6 +105,9 @@ import axios from 'axios';
  * @property {number} [min_pond_area_m2] - Minimum contiguous footprint in square meters for a viable pond.
  * @property {number} [max_pond_area_m2] - Optional maximum allowable pond footprint in square meters.
  * @property {number} [max_candidate_sites] - Maximum number of ranked candidate pond sites to return.
+ * @property {number} [selected_latitude] - Centre latitude selected on the map.
+ * @property {number} [selected_longitude] - Centre longitude selected on the map.
+ * @property {number} [selected_radius_m] - Radius of the selected analysis area.
  * @property {number} [snap_radius_m] - Search radius in meters to snap pour point to stream channel.
  * @property {boolean} [use_pysheds] - Attempt pysheds hydrological flow accumulation first (falls back to native D8).
  * @property {number} [slope_threshold] - Alias for suitability_threshold.
@@ -277,13 +280,21 @@ export function normalizeCatchmentError(error) {
  * @throws {CatchmentApiError} Normalized error object: { status: number, message: string }.
  */
 export async function analyzeContourFile(file, params = {}, options = {}) {
-  if (!file) {
+  const hasSelectedArea =
+    params &&
+    Number.isFinite(Number(params.selected_latitude)) &&
+    Number.isFinite(Number(params.selected_longitude)) &&
+    Number.isFinite(Number(params.selected_radius_m));
+
+  if (!file && !hasSelectedArea) {
     throw new CatchmentApiError(400, 'Please select a valid .kml or .kmz contour file to analyze.');
   }
 
   // 1. Build multipart/form-data request
   const formData = new FormData();
-  formData.append('file', file);
+  if (file) {
+    formData.append('file', file);
+  }
 
   // 2. Append optional override params only if explicitly provided (never send unprovided defaults)
   if (params && typeof params === 'object') {

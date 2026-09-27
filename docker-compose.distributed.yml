@@ -1,0 +1,25 @@
+services:
+  sys2:
+    build: .
+    command: python -m distributed.sys2
+    ports: ["3002:3000"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      JALASETU_PORT: "3000"
+  sys3:
+    build: .
+    command: python -m distributed.sys3
+    ports: ["3003:3000"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      JALASETU_PORT: "3000"
+  sys4:
+    build: .
+    command: python -m distributed.sys4
+    ports: ["3000:3000"]
+    depends_on: [sys2, sys3]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      JALASETU_SYS2_URL: http://sys2:3000
+      JALASETU_SYS3_URL: http://sys3:3000
+      JALASETU_PORT: "3000"

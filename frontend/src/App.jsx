@@ -20,6 +20,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
   const [focusedSite, setFocusedSite] = useState(null);
+  const [selectedArea, setSelectedArea] = useState(null);
+  const [analysisRequestToken, setAnalysisRequestToken] = useState(0);
+  const selectionRadiusM = 250;
 
   /**
    * Invoked when a new file is chosen or dropped in the UploadPanel.
@@ -30,6 +33,7 @@ export default function App() {
     setAnalysisResult(null);
     setAnalysisError(null);
     setFocusedSite(null);
+    setSelectedArea(null);
   };
 
   /**
@@ -40,7 +44,13 @@ export default function App() {
     setAnalysisResult(null);
     setAnalysisError(null);
     setFocusedSite(null);
+    setSelectedArea(null);
     setIsLoading(false);
+  };
+
+  const handleAreaClear = () => {
+    setSelectedArea(null);
+    setFocusedSite(null);
   };
 
   /**
@@ -72,18 +82,35 @@ export default function App() {
         badgeClass: 'badge-header-loading',
       };
     }
-    if (analysisResult) {
-      return {
-        dotClass: 'status-dot status-dot-success',
-        label: 'Analysis Complete',
-        badgeClass: 'badge-header-success',
-      };
-    }
     if (analysisError) {
       return {
         dotClass: 'status-dot status-dot-error',
         label: 'Analysis Failed',
         badgeClass: 'badge-header-error',
+      };
+    }
+    if (analysisResult && selectedArea) {
+      const analyzedArea = analysisResult.selected_area;
+      const analyzedLatitude = Number(analyzedArea?.latitude);
+      const analyzedLongitude = Number(analyzedArea?.longitude);
+      const selectionChanged =
+        !Number.isFinite(analyzedLatitude) ||
+        !Number.isFinite(analyzedLongitude) ||
+        Math.abs(analyzedLatitude - selectedArea.latitude) > 0.000001 ||
+        Math.abs(analyzedLongitude - selectedArea.longitude) > 0.000001;
+      if (selectionChanged) {
+        return {
+          dotClass: 'status-dot status-dot-ready',
+          label: 'New Area Selected',
+          badgeClass: 'badge-header-ready',
+        };
+      }
+    }
+    if (analysisResult) {
+      return {
+        dotClass: 'status-dot status-dot-success',
+        label: 'Analysis Complete',
+        badgeClass: 'badge-header-success',
       };
     }
     if (uploadedFile) {
@@ -107,9 +134,7 @@ export default function App() {
       {/* Top Application Header */}
       <header className="app-header">
         <div className="brand-section">
-          <span className="brand-logo-icon" role="img" aria-label="Jalasetu Water Drop">
-            💧
-          </span>
+          <span className="brand-logo-icon" aria-hidden="true">JS</span>
           <div>
             <h1 className="brand-title">JalaSetu</h1>
             <p className="brand-tagline">Smarter farm pond siting & catchment analysis for villages</p>
@@ -117,7 +142,7 @@ export default function App() {
         </div>
 
         {/* Dynamic Global Status Badge */}
-        <div className={`header-status-badge ${headerStatus.badgeClass}`}>
+        <div className={`header-status-badge ${headerStatus.badgeClass}`} role="status" aria-live="polite">
           <span className={headerStatus.dotClass}></span>
           <span>{headerStatus.label}</span>
         </div>
@@ -130,18 +155,56 @@ export default function App() {
           {/* 1. Contour Map Upload Panel */}
           <UploadPanel
             onAnalysisComplete={handleAnalysisComplete}
-            onUpload={handleAnalysisComplete}
             onFileSelect={handleFileSelect}
             onFileClear={handleFileClear}
             onLoadingChange={setIsLoading}
             onError={handleAnalysisError}
+            analysisRequestToken={analysisRequestToken}
+            allowDefaultContour
+            params={selectedArea ? {
+              selected_latitude: selectedArea.latitude,
+              selected_longitude: selectedArea.longitude,
+              selected_radius_m: selectedArea.radiusM,
+            } : {}}
           />
+
+          <div className="selection-help-card" role="status">
+            <div className="selection-help-header">
+              <strong>{selectedArea ? 'Land area selected' : 'Select a land area'}</strong>
+              {selectedArea && (
+                <button
+                  className="btn btn-ghost btn-sm selection-clear-btn"
+                  type="button"
+                  onClick={handleAreaClear}
+                  disabled={isLoading}
+                  aria-label="Clear selected land area"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <span>
+              {selectedArea
+                ? `250 m radius at ${selectedArea.latitude.toFixed(5)}, ${selectedArea.longitude.toFixed(5)}. Click Analyze to update the recommendation.`
+                : 'Click anywhere on the map to select a 250 m analysis radius before running the analysis.'}
+            </span>
+            {selectedArea && (
+              <button
+                className="btn btn-primary btn-sm btn-block selection-analyze-btn"
+                type="button"
+                onClick={() => setAnalysisRequestToken((token) => token + 1)}
+                disabled={isLoading}
+              >
+                {uploadedFile ? 'Analyze selected area' : 'Analyze selected area (demo contours)'}
+              </button>
+            )}
+          </div>
 
           {/* 2. Welcome Intro Card (Shown on First Load / Landing State) */}
           {!analysisResult && !uploadedFile && (
             <div className="welcome-intro-card" role="region" aria-label="About Jalasetu">
               <div className="welcome-header">
-                <span className="welcome-icon">🌱</span>
+                <span className="welcome-icon" aria-hidden="true">01</span>
                 <h3 className="welcome-title">Village Pond Siting Assistant</h3>
               </div>
               <p className="welcome-text">
@@ -184,6 +247,9 @@ export default function App() {
           <MapView
             analysisData={analysisResult}
             focusedSite={focusedSite}
+            selectedArea={selectedArea}
+            selectionRadiusM={selectionRadiusM}
+            onAreaSelect={setSelectedArea}
           />
         </main>
       </div>
