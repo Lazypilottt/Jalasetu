@@ -1,3 +1,26 @@
+# Assignemet 1
+
+## JalaSetu: Farm-Pond Siting and Catchment Analysis
+
+**Name:** Aditya Yadav
+
+**Roll Number:** 12340100
+
+**GitHub Repository:** <https://github.com/Lazypilottt/Jalasetu>
+
+**Final Working Front-end URL:**
+**[EDITABLE PLACEHOLDER: Paste the deployed frontend URL here before submission.]**
+
+### Report note
+
+This report follows the supplied `main.md` report format. The screenshot
+locations are intentionally left as editable placeholders so final browser
+captures can be inserted without changing the report structure.
+
+> **[SCREENSHOT PLACEHOLDER 1 — Insert the landing page and map-selection view here.]**
+
+---
+
 # Introduction {#sec:intro}
 
 Rural communities depend on short and uncertain monsoon seasons, while
@@ -156,7 +179,7 @@ an approved local design storm.
 |---|---|
 | `GET /health` | Service liveness check. |
 | `POST /analyzeContour` | Upload KML/KMZ, optionally include selected latitude, longitude and radius, and run the complete pipeline. |
-| `POST /findCatchment` | Backward-compatible alias for the same analysis. |
+| `POST /catchment/analyzeContour` | Compatibility route for the same analysis endpoint. |
 | `GET /analyzeContour/schema` | Return response schema and default parameters. |
 
 The API has no authentication in this academic prototype. FastAPI validates
@@ -177,6 +200,13 @@ catchment hectares, SCS runoff volume, rainfall/CN assumptions, and
 feasibility notes. The production bundle was verified with `npm run build`.
 
 <figure id="fig:ui" data-latex-placement="h">
+
+<pre>
+[SCREENSHOT PLACEHOLDER 2]
+Insert a screenshot of the completed frontend here showing the sidebar,
+selected land area, recommended pond overlay, catchment boundary, and result
+metrics.
+</pre>
 
 <figcaption>Application interface showing the results overlay.</figcaption>
 </figure>
@@ -220,8 +250,10 @@ requests while still letting a user target a parcel neighbourhood.
 
 For the supplied `contours_1m.kml`, the representative run produced a
 successful response with a recommended pond location and ranked alternative
-sites. Exact values are data-dependent and are returned by the API rather
-than hard-coded: the reportable fields are `recommended_site.latitude`,
+sites. The no-upload map-only workflow also runs against the bundled contour
+dataset when a complete selected area is provided. Exact values are
+data-dependent and are returned by the API rather than hard-coded: the
+reportable fields are `recommended_site.latitude`,
 `recommended_site.longitude`, `recommended_site.area_m2`,
 `recommended_site.storage_capacity_m3`, `catchment.area_hectares`, and
 `catchment.estimated_runoff_volume_m3`. The map makes all three requested
@@ -231,19 +263,28 @@ popups. The selected-area response also records centre, radius, and area.
 
 <figure id="fig:results" data-latex-placement="h">
 
+<pre>
+[SCREENSHOT PLACEHOLDER 3]
+Insert a screenshot of the map after analysis. The screenshot should show
+the suggested pond location/footprint, catchment boundary, selected area,
+and the visible water-volume/catchment summary.
+</pre>
+
 <figcaption>Example results overlay for a selected village.</figcaption>
 </figure>
 
 ## Performance
 
-The targeted backend regression suite completed 11 tests in 12.56 seconds,
-including API route and end-to-end coverage. The Vite production build
-completed successfully in approximately 1 second and generated a 406.5 kB
-JavaScript bundle (124.7 kB gzip) plus 42.9 kB CSS (11.8 kB gzip). These
-figures include test/build startup overhead and are not a production load
-benchmark. Raster cost is approximately linear in DEM cell count; for
-stress scaling, use adaptive resolution, worker processes, upload limits,
-request timeouts, and a job queue for very large files.
+The complete backend regression suite completed 34 tests in approximately
+15.5 seconds in the development environment. The API-route regression tests,
+including the selected-area fallback, completed 8 tests successfully. The
+Vite production build completed successfully in approximately 1 second and
+generated a JavaScript bundle of approximately 411 kB (126 kB gzip) and a
+CSS bundle of approximately 46 kB (12 kB gzip). These figures include test
+and build startup overhead and are not a production load benchmark. Raster
+cost is approximately linear in DEM cell count; for stress scaling, use
+adaptive resolution, worker processes, upload limits, request timeouts, and
+a job queue for very large files.
 
 # Discussion and Limitations {#sec:discussion}
 
@@ -276,6 +317,20 @@ distributed-stage demonstrations in `distributed/`, regression tests in
 `tests/`, deployment files, the supplied `contours_1m.kml`, and this report
 template filled with the implemented system details.
 
+## Submission Details
+
+**Student:** Aditya Yadav
+
+**Roll Number:** 12340100
+
+**Assignment:** Assignemet 1
+
+**Repository:** <https://github.com/Lazypilottt/Jalasetu>
+
+**Final Working Front-end URL:**
+
+**[EDITABLE PLACEHOLDER: Add the final deployed frontend URL.]**
+
 # Appendix: Reproducibility and Operations
 
 1. Start the backend with `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
@@ -286,3 +341,6 @@ template filled with the implemented system details.
    storage capacity, runoff volume, and processing notes.
 5. Run backend regression checks with
    `python -m pytest tests/` and build checks with `cd frontend && npm run build`.
+6. Replace the screenshot placeholders in this report with final browser
+   screenshots and add the deployed frontend URL in the submission-details
+   fields.
