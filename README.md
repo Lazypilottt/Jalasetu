@@ -506,6 +506,79 @@ The repository includes [`scripts/deploy_to_sys4.sh`](./scripts/deploy_to_sys4.s
 for a systemd-based deployment on a Linux host. Review it before use because it
 updates the target checkout and requires administrative privileges.
 
+### Verified four-node deployment
+
+The distributed deployment has been deployed and verified end-to-end across
+four cluster nodes. The public application entry point is:
+
+**<http://10.1.75.51:3204/>**
+
+This address is the single public entry point exposed by the Nginx reverse
+proxy on `sys4`.
+
+#### Cluster topology
+
+| Node | Internal address | Role | Service port |
+|---|---|---|---:|
+| `sys1` | `172.17.0.2` | React/Vite static frontend served by the lightweight SPA server | `3000` |
+| `sys2` | `172.17.0.3` | KML/KMZ parsing and DEM generation | `3000` |
+| `sys3` | `172.17.0.4` | Terrain derivatives and pond-site ranking | `3000` |
+| `sys4` | `172.17.0.5` | Gateway, catchment delineation, runoff response, and Nginx entry point | `3000`, `3204` |
+
+Administrative SSH access was verified through the host's mapped ports
+`2201`–`2204`, corresponding to `sys1`–`sys4`. The deployment was started
+from a clean process state; previous Python, Node, Vite, Uvicorn, Flask, and
+SPA-server processes were stopped before verification.
+
+#### Request routing
+
+Nginx on `sys4` routes requests as follows:
+
+| Request path | Upstream | Purpose |
+|---|---|---|
+| `/` and static assets | `172.17.0.2:3000` | Serve the frontend application |
+| `/v1/parse`, `/v1/dem`, `/v1/prepare` | `172.17.0.3:3000` | Forward parsing and DEM stages to `sys2` |
+| `/v1/terrain`, `/v1/rank` | `172.17.0.4:3000` | Forward terrain and ranking stages to `sys3` |
+| `/analyzeContour`, `/findCatchment`, `/health` | `127.0.0.1:8000` | Handle gateway analysis and operational endpoints on `sys4` |
+
+The frontend was built with `VITE_API_BASE_URL=""`, so browser requests use
+same-origin relative paths through the public gateway. This avoids exposing
+internal node addresses to users and removes the need for browser-side
+cross-origin routing in the deployed configuration.
+
+#### Deployment verification
+
+The following checks were completed:
+
+1. Nginx configuration validation passed with `nginx -t`.
+2. The public URL returned `HTTP/1.1 200 OK` with the frontend HTML shell.
+3. The real 6.7 MB `contours_1m.kml` file was uploaded from outside the
+   cluster to `http://10.1.75.51:3204/analyzeContour`.
+4. The complete request finished successfully in **19.06 seconds**.
+5. The pipeline parsed **2,711 contours**, generated a **15 m DEM**, computed
+   terrain derivatives and MCDM pond ranking, delineated the upstream
+   catchment, and returned GeoJSON site and catchment boundaries.
+6. The returned catchment area was approximately **0.61 hectares**.
+7. All stages returned successful health checks before the full-pipeline test.
+
+#### Memory verification
+
+Peak observed resident memory remained below the 500 MB per-node limit during
+the full-load check:
+
+| Node | Observed RSS |
+|---|---:|
+| `sys1` frontend | approximately 19.9 MB |
+| `sys2` parsing/DEM | approximately 241 MB |
+| `sys3` terrain/ranking | approximately 361 MB |
+| `sys4` gateway/catchment | approximately 295 MB |
+
+No out-of-memory errors were observed. Idle memory on `sys2` and `sys3` was
+approximately 166 MB, and the frontend SPA server used approximately 19.9 MB.
+These figures are deployment observations for the verified test workload, not
+capacity guarantees for arbitrarily large contour files or unrestricted
+concurrency.
+
 ### Frontend
 
 Build static assets:

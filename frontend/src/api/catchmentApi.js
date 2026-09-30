@@ -164,7 +164,9 @@ export class CatchmentApiError extends Error {
  * Falls back to localhost:8000 in development.
  */
 export const API_BASE_URL = (
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) || 'http://127.0.0.1:8000'
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL !== undefined)
+    ? import.meta.env.VITE_API_BASE_URL
+    : 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '');
 
 export const apiClient = axios.create({

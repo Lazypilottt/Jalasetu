@@ -508,12 +508,39 @@ class CatchmentDelineationService:
         if use_pysheds_if_available and HAS_PYSHEDS:
             try:
                 logger.info("Running catchment delineation using Pysheds engine...")
+                import tempfile, rasterio
+                from rasterio.transform import from_affine
                 from pysheds.grid import Grid
-                grid = Grid.from_raster(dem_data.array, dem_data.transform, crs=dem_data.crs)
-                pit_filled = grid.fill_pits(dem_data.array)
+
+                # pysheds 0.5 Grid.from_raster() requires a file path, not an in-memory array.
+                # Write the DEM array to a temp GeoTIFF and reload via pysheds.
+                with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    from affine import Affine
+                    transform = dem_data.transform if isinstance(dem_data.transform, Affine) else Affine(*dem_data.transform[:6])
+                    with rasterio.open(
+                        tmp_path, "w",
+                        driver="GTiff",
+                        height=dem_data.array.shape[0],
+                        width=dem_data.array.shape[1],
+                        count=1,
+                        dtype=dem_data.array.dtype,
+                        crs=dem_data.crs,
+                        transform=transform,
+                    ) as dst:
+                        dst.write(dem_data.array, 1)
+
+                    grid = Grid.from_raster(tmp_path)
+                    dem_arr = grid.read_raster(tmp_path)
+                finally:
+                    import os as _os
+                    _os.unlink(tmp_path)
+
+                pit_filled = grid.fill_pits(dem_arr)
                 flooded = grid.fill_depressions(pit_filled)
                 inflated = grid.resolve_flats(flooded)
-                
+
                 pysheds_fdir = grid.flowdir(inflated)
                 pysheds_acc = grid.accumulation(pysheds_fdir)
 
