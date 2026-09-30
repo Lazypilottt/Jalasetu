@@ -97,29 +97,47 @@ class Gateway:
     def __init__(self, config: Optional[ServiceConfig] = None):
         self.config = config or ServiceConfig.from_env()
 
+    def _call_stage(self, endpoint: str, json_data: dict, prefer_url: str, fallback_url: str):
+        candidates = [u for u in [prefer_url, fallback_url] if u]
+        for url in candidates:
+            try:
+                logger.info(f"Calling worker stage {url}{endpoint}")
+                resp = requests.post(
+                    f"{url}{endpoint}",
+                    json=json_data,
+                    timeout=self.config.request_timeout_seconds,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.warning(f"Worker {url}{endpoint} responded with status {resp.status_code}: {resp.text[:200]}")
+            except Exception as exc:
+                logger.warning(f"Worker {url}{endpoint} failed or unreachable: {exc}")
+                continue
+        return None
+
     def _prepare(self, file_bytes: bytes, params: Dict[str, Any]):
-        if self.config.sys2_url:
-            response = requests.post(
-                f"{self.config.sys2_url}/v1/prepare",
-                json={"file_base64": base64.b64encode(file_bytes).decode("ascii"), "params": params},
-                timeout=self.config.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = self._call_stage(
+            "/v1/prepare",
+            {"file_base64": base64.b64encode(file_bytes).decode("ascii"), "params": params},
+            prefer_url=self.config.sys2_url,
+            fallback_url=self.config.sys3_url,
+        )
+        if data is not None:
             return ParsedContoursPayload.from_dict(data["contours"]), DEMPayload.from_dict(data["dem"])
+        logger.info("Falling back to local in-process contour parsing and DEM building on sys4")
         contours = parse_contours_stage(file_bytes)
         return contours, build_dem_stage(contours, params)
 
     def _analyze(self, dem: DEMPayload, params: Dict[str, Any]):
-        if self.config.sys3_url:
-            response = requests.post(
-                f"{self.config.sys3_url}/v1/analyze",
-                json={"dem": dem.to_dict(), "params": params},
-                timeout=self.config.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = self._call_stage(
+            "/v1/analyze",
+            {"dem": dem.to_dict(), "params": params},
+            prefer_url=self.config.sys3_url,
+            fallback_url=self.config.sys2_url,
+        )
+        if data is not None:
             return TerrainPayload.from_dict(data["terrain"]), PondRankingPayload.from_dict(data["ranking"])
+        logger.info("Falling back to local in-process terrain analysis and ranking on sys4")
         terrain = analyze_terrain_stage(dem, params)
         return terrain, rank_pond_sites_stage(terrain, params)
 
@@ -275,4 +293,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("JALASETU_PORT", "3000")))
+    app.run(host="0.0.0.0", port=int(os.getenv("JALASETU_PORT", "3000")), threaded=True)
