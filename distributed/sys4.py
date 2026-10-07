@@ -24,6 +24,7 @@ from app.models.schemas import (
     InputSummary,
     PondSiteSummary,
 )
+from app.services.location_search import recommend_locations
 
 from .config import ServiceConfig
 from .stage_payloads import (
@@ -266,6 +267,31 @@ def create_app(config: Optional[ServiceConfig] = None) -> Flask:
                 "default_parameters": DEFAULT_PIPELINE_PARAMS,
             }
         )
+
+    @app.route("/IP/search/", methods=["GET", "POST"])
+    def search_locations():
+        values = request.args if request.method == "GET" else request.form
+        try:
+            latitude = float(values["lat"])
+            longitude = float(values["long"])
+            category = values["cat"]
+            radius = float(values["rad"])
+        except (KeyError, TypeError, ValueError):
+            return _error("lat, long, cat, and rad are required", 422)
+
+        if not category.strip():
+            return _error("cat must not be empty", 422)
+        if radius < 0:
+            return _error("rad must be non-negative", 422)
+
+        link_text = None
+        if request.method == "POST" and "link" in request.files:
+            link_text = request.files["link"].read().decode("utf-8")
+
+        try:
+            return jsonify(recommend_locations(latitude, longitude, category, radius, link_text))
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            return _error(str(exc), 400)
 
     @app.post("/analyzeContour")
     @app.post("/findCatchment")
