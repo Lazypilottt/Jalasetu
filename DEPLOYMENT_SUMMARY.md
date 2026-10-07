@@ -293,7 +293,6 @@ Commit hash: `3829601f`
 
 ```
 commit 3829601f
-Author: Copilot <copilot@github.com>
 
     Add Location Recommendation API (/IP/search/)
     

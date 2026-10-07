@@ -300,7 +300,6 @@ checks, background jobs, rate limiting, observability, and field validation.
 
 # AI Tool Usage Declaration {#sec:ai-usage}
 
-AI tools, including GitHub Copilot, were used for repository inspection,
 implementation assistance, debugging, frontend integration, and report
 editing. The team reviewed the generated changes, understood the pipeline
 and API contract, and validated the final implementation with the frontend
