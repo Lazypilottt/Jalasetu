@@ -7,6 +7,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import catchment
+from app.routers import locations
 from app.models.schemas import HealthResponse
 
 # OpenAPI Tag Metadata
@@ -60,6 +61,7 @@ app.add_middleware(
 # Mount Catchment Router at root (/analyzeContour) and under /catchment prefix
 app.include_router(catchment.router, tags=["Catchment Analysis"])
 app.include_router(catchment.router, prefix="/catchment", tags=["Catchment Analysis"], include_in_schema=False)
+app.include_router(locations.router, tags=["Location Recommendations"])
 
 
 @app.get(
