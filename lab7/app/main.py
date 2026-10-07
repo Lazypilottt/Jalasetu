@@ -4,8 +4,9 @@ import csv
 import heapq
 import math
 import os
-import tempfile
+from bisect import bisect_left
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,8 @@ class LocationStore:
         self.buckets = defaultdict(list)
         self.latitudes = []
         self.longitudes = []
+        self.step = 0.01
+        self.grid_links = []
         self._load(filename)
 
     def _load(self, filename: str) -> None:
@@ -43,23 +46,37 @@ class LocationStore:
         self.longitudes = sorted({item[2] for item in self.rows})
         self.lat_index = {value: position for position, value in enumerate(self.latitudes)}
         self.lon_index = {value: position for position, value in enumerate(self.longitudes)}
+        if len(self.latitudes) > 1 and len(self.longitudes) > 1:
+            self.step = max(
+                min(
+                    abs(self.latitudes[1] - self.latitudes[0]),
+                    abs(self.longitudes[1] - self.longitudes[0]),
+                ),
+                1e-9,
+            )
         for index, item in enumerate(self.rows):
             lat_pos = self.lat_index[item[1]]
             lon_pos = self.lon_index[item[2]]
             self.by_grid[(lat_pos, lon_pos)] = index
-            self.buckets[(math.floor(item[1] / self._bucket_size()), math.floor(item[2] / self._bucket_size()))].append(index)
+            self.buckets[self._bucket(item[1], item[2])].append(index)
+        self.grid_links = [tuple(self._grid_neighbors(index)) for index in range(len(self.rows))]
 
     def _bucket_size(self) -> float:
-        if len(self.latitudes) < 2 or len(self.longitudes) < 2:
-            return 0.01
-        return max(
-            min(abs(self.latitudes[1] - self.latitudes[0]), abs(self.longitudes[1] - self.longitudes[0])),
-            1e-9,
-        ) * 8
+        return self.step * 8
+
+    def _bucket(self, latitude, longitude):
+        size = self._bucket_size()
+        return math.floor(latitude / size), math.floor(longitude / size)
 
     @staticmethod
     def _nearest(values, target):
-        return min(range(len(values)), key=lambda position: abs(values[position] - target))
+        position = bisect_left(values, target)
+        if position == 0:
+            return 0
+        if position == len(values):
+            return position - 1
+        before = position - 1
+        return before if target - values[before] <= values[position] - target else position
 
     def candidates(self, latitude: float, longitude: float, radius: float, category: str):
         size = self._bucket_size()
@@ -88,6 +105,9 @@ class LocationStore:
         return self.by_grid[(lat_pos, lon_pos)]
 
     def neighbors(self, index: int):
+        yield from self.grid_links[index]
+
+    def _grid_neighbors(self, index: int):
         item = self.rows[index]
         lat_pos = self.lat_index[item[1]]
         lon_pos = self.lon_index[item[2]]
@@ -97,18 +117,23 @@ class LocationStore:
                 other = self.rows[neighbor]
                 yield neighbor, math.hypot(item[1] - other[1], item[2] - other[2])
 
-    def links(self, text: Optional[str]):
+    @lru_cache(maxsize=8)
+    def links(self, text: str):
         if text is None:
             return None
         graph = defaultdict(list)
+        lines = []
         for line_number, line in enumerate(text.splitlines(), 1):
             values = line.split()
             if not values or values[0].startswith("#"):
                 continue
             if len(values) != 2:
                 raise ValueError(f"Invalid linkage at line {line_number}")
-            first = self._link_index(values[0])
-            second = self._link_index(values[1])
+            lines.append((line_number, values[0], values[1]))
+        use_indexes = any("0" in (first, second) for _, first, second in lines)
+        for line_number, first_value, second_value in lines:
+            first = self._link_index(first_value, use_indexes)
+            second = self._link_index(second_value, use_indexes)
             if first == second:
                 continue
             a = self.rows[first]
@@ -118,8 +143,8 @@ class LocationStore:
             graph[second].append((first, weight))
         return graph
 
-    def _link_index(self, value: str) -> int:
-        if value in self.by_id:
+    def _link_index(self, value: str, use_indexes: bool) -> int:
+        if not use_indexes and value in self.by_id:
             return self.by_id[value]
         try:
             index = int(value)
@@ -150,7 +175,7 @@ class LocationStore:
                 eligible.remove(current)
                 if len(results) == 10:
                     best_limit = distance
-            for neighbor, weight in (custom.get(current, ()) if custom is not None else self.neighbors(current)):
+            for neighbor, weight in (custom.get(current, ()) if custom is not None else self.grid_links[current]):
                 next_distance = distance + weight
                 if next_distance < distances.get(neighbor, math.inf):
                     distances[neighbor] = next_distance
