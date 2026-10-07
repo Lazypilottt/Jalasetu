@@ -13,6 +13,9 @@ conservation, and rapid preliminary site screening. It provides a technical
 recommendation, not a substitute for a field survey, detailed engineering
 design, or statutory approval.
 
+**New:** Location Recommendation API for finding the 10 closest locations from
+a 10,000-node dataset using shortest-path routing. See [Location API](#location-recommendation-api).
+
 ---
 
 ## Contents
@@ -23,6 +26,7 @@ design, or statutory approval.
 - [Using the web application](#using-the-web-application)
 - [Analysis outputs](#analysis-outputs)
 - [API reference](#api-reference)
+- [Location Recommendation API](#location-recommendation-api)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Distributed services](#distributed-services)
@@ -265,6 +269,7 @@ Interactive API documentation is available at:
 | `GET` | `/analyzeContour/schema` | Returns the response schema, defaults, and example metadata. |
 | `POST` | `/analyzeContour` | Runs contour, terrain, pond, catchment, and runoff analysis. |
 | `POST` | `/catchment/analyzeContour` | Compatibility route for the same analysis endpoint. |
+| `GET` / `POST` | `/IP/search/` | **Location Recommendation API** — finds 10 closest locations by grid distance. |
 
 ### `POST /analyzeContour`
 
@@ -366,6 +371,110 @@ The response is a `CatchmentResponse` object:
 The numeric values above are illustrative. Actual values depend on the
 uploaded or bundled contours, selected area, DEM resolution, rainfall, and
 Curve Number.
+
+---
+
+## Location Recommendation API
+
+### Overview
+
+The Location Recommendation API (`/IP/search/`) recommends the 10 closest
+locations from a 10,000-node dataset using shortest-path grid routing. It
+accepts latitude, longitude, category, search radius, and optional road
+linkage, then returns location IDs ranked by traversal distance.
+
+### Key features
+
+- **Two-stage filtering**: Circular radius for eligibility, shortest-path for ranking.
+- **Grid routing**: Supports default 4-neighbor grid topology or custom road linkage.
+- **Efficient pathfinding**: Dijkstra's algorithm with O((V+E) log V) complexity.
+- **Case-insensitive category**: Bank, cafe, hospital, park, pharmacy, restaurant, school, store.
+
+### Endpoint: `GET /IP/search/` or `POST /IP/search/`
+
+#### Query parameters (GET)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `lat` | float | Yes | Current latitude (0.0–1.0). |
+| `long` | float | Yes | Current longitude (0.0–1.0). |
+| `cat` | string | Yes | Category filter (case-insensitive). |
+| `rad` | float | Yes | Search radius (Euclidean, ≥ 0). |
+| `link` | file | No | Optional road linkage file (space-separated node pairs). |
+
+#### Form fields (POST multipart)
+
+Same as query parameters above, but `link` is an uploaded file.
+
+#### Example requests
+
+**GET:**
+```bash
+curl "http://127.0.0.1:8000/IP/search/?lat=0.5&long=0.5&cat=bank&rad=0.1"
+```
+
+**POST with multipart:**
+```bash
+curl -X POST "http://127.0.0.1:8000/IP/search/" \
+  -F "lat=0.5" \
+  -F "long=0.5" \
+  -F "cat=bank" \
+  -F "rad=0.1"
+```
+
+**POST with custom linkage:**
+```bash
+curl -X POST "http://127.0.0.1:8000/IP/search/" \
+  -F "lat=0.5" \
+  -F "long=0.5" \
+  -F "cat=bank" \
+  -F "rad=0.1" \
+  -F "link=@roads.txt"
+```
+
+#### Response
+
+```json
+{
+  "status": "success",
+  "locations": [
+    "loc_1234",
+    "loc_5678",
+    ...
+  ],
+  "count": 10
+}
+```
+
+#### Linkage file format
+
+Space-separated node pairs, one per line. Lines starting with `#` are ignored.
+
+```text
+# Road network for grid
+0 1
+1 2
+0 10
+# ... additional edges
+```
+
+### Algorithm
+
+1. **Load CSV**: Cache locations with ID, latitude, longitude, category.
+2. **Construct graph**: Use provided linkage or default 4-neighbor grid.
+3. **Start node**: Nearest grid node to query point.
+4. **Dijkstra SSSP**: Compute shortest-path distances from start node.
+5. **Filter**: Keep locations matching category AND within circular radius.
+6. **Rank & return**: Sort by path distance, return top 10.
+
+### Performance
+
+- Query latency: 1–5 ms (100 locations) to 50–200 ms (100,000+ locations).
+- Memory: ~2 MB for 10,000 locations.
+- Scales efficiently with K-D tree radius filtering for large datasets.
+
+For more details, see [LOCATION_API_REPORT.md](./LOCATION_API_REPORT.md) and
+[LOCATION_API_QUICKSTART.md](./LOCATION_API_QUICKSTART.md).
 
 ---
 
