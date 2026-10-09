@@ -80,10 +80,16 @@ class LocationStore:
 
     def candidates(self, latitude: float, longitude: float, radius: float, category: str):
         size = self._bucket_size()
-        lat_min = math.floor((latitude - radius) / size)
-        lat_max = math.floor((latitude + radius) / size)
-        lon_min = math.floor((longitude - radius) / size)
-        lon_max = math.floor((longitude + radius) / size)
+        dataset_lat_min = math.floor(self.latitudes[0] / size)
+        dataset_lat_max = math.floor(self.latitudes[-1] / size)
+        dataset_lon_min = math.floor(self.longitudes[0] / size)
+        dataset_lon_max = math.floor(self.longitudes[-1] / size)
+        lat_min = max(dataset_lat_min, math.floor((latitude - radius) / size))
+        lat_max = min(dataset_lat_max, math.floor((latitude + radius) / size))
+        lon_min = max(dataset_lon_min, math.floor((longitude - radius) / size))
+        lon_max = min(dataset_lon_max, math.floor((longitude + radius) / size))
+        if lat_min > lat_max or lon_min > lon_max:
+            return []
         wanted = category.casefold()
         found = []
         seen = set()
@@ -200,6 +206,8 @@ app = FastAPI(title="Lab7 Location Recommendation API")
 
 
 def search(latitude, longitude, category, radius, link_text):
+    if not all(math.isfinite(value) for value in (latitude, longitude, radius)):
+        raise HTTPException(status_code=422, detail="lat, long, and rad must be finite")
     if not category.strip():
         raise HTTPException(status_code=422, detail="cat must not be empty")
     try:

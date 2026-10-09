@@ -58,3 +58,12 @@ def test_api_get_and_post_contract():
     assert post_response.status_code == 200
     assert get_response.json() == post_response.json()
     assert len(get_response.json()) == 10
+
+
+def test_extreme_radius_is_bounded_and_nonfinite_values_are_rejected():
+    client = TestClient(app)
+    huge = client.get("/IP/search/?lat=999&long=-999&cat=bank&rad=999999")
+    infinite = client.get("/IP/search/?lat=0.5&long=0.5&cat=bank&rad=inf")
+    assert huge.status_code == 200
+    assert len(huge.json()) == 10
+    assert infinite.status_code == 422
