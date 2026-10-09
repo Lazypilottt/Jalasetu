@@ -135,13 +135,17 @@ class LocationStore:
             values = line.split()
             if not values or values[0].startswith("#"):
                 continue
-            if len(values) != 2:
+            if len(values) not in (2, 4):
                 raise ValueError(f"Invalid linkage at line {line_number}")
-            lines.append((line_number, values[0], values[1]))
-        use_indexes = any("0" in (first, second) for _, first, second in lines)
-        for line_number, first_value, second_value in lines:
-            first = self._link_index(first_value, use_indexes)
-            second = self._link_index(second_value, use_indexes)
+            lines.append((line_number, values))
+        use_indexes = any(len(values) == 2 and "0" in values for _, values in lines)
+        for line_number, values in lines:
+            if len(values) == 4:
+                first = self._coordinate_index(values[:2], line_number)
+                second = self._coordinate_index(values[2:], line_number)
+            else:
+                first = self._link_index(values[0], use_indexes)
+                second = self._link_index(values[1], use_indexes)
             if first == second:
                 continue
             a = self.rows[first]
@@ -150,6 +154,16 @@ class LocationStore:
             graph[first].append((second, weight))
             graph[second].append((first, weight))
         return graph
+
+    def _coordinate_index(self, values, line_number: int) -> int:
+        try:
+            longitude, latitude = (float(value) for value in values)
+        except ValueError as exc:
+            raise ValueError(f"Invalid linkage coordinates at line {line_number}") from exc
+        index = self.by_grid.get((self.lat_index.get(latitude), self.lon_index.get(longitude)))
+        if index is None:
+            raise ValueError(f"Unknown linkage point at line {line_number}")
+        return index
 
     def _link_index(self, value: str, use_indexes: bool) -> int:
         if not use_indexes and value in self.by_id:

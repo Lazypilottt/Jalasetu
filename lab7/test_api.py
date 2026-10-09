@@ -47,6 +47,14 @@ def test_numeric_zero_linkage_uses_zero_based_indexes():
     assert store.links(links)[0][0][0] == 1
 
 
+def test_coordinate_linkage_uses_longitude_latitude_quads():
+    first = store.rows[store.by_grid[(90, 18)]]
+    second = store.rows[store.by_grid[(90, 19)]]
+    links = f"{first[2]} {first[1]} {second[2]} {second[1]}\n"
+    graph = store.links(links)
+    assert graph[store.by_id[first[0]]][0][0] == store.by_id[second[0]]
+
+
 def test_api_get_and_post_contract():
     client = TestClient(app)
     get_response = client.get("/IP/search/?lat=0.5&long=0.5&cat=bank&rad=0.1")
