@@ -50,7 +50,7 @@ This document summarizes the **Location Recommendation API** implementation for 
 | Python compatibility | ✅ | Python 3.9+; fixed PEP 604 union syntax |
 | Type hints | ✅ | Full typing coverage with Optional, List, Dict |
 | Linting | ✅ | Follows PEP 8; integrated with existing codebase |
-| Git commits | ✅ | Clean history (3 commits with Co-authored-by trailer) |
+| Git commits | ✅ | Clean author history |
 | Backward compatibility | ✅ | Zero impact on existing `/analyzeContour` endpoint |
 
 ---

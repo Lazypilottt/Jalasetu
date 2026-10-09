@@ -87,6 +87,15 @@ The following requests were executed against sys4:
 | 9,999-link file, cached | 200 | 0.014 s |
 | 9,999-link file, cold parse | 200 | 0.111 s |
 
+Coordinate linkage files use four space-separated values per line:
+
+```text
+Longitude_A Latitude_A Longitude_B Latitude_B
+```
+
+The supplied `link.txt` sample was parsed successfully with 14,800 lines and
+14,800 undirected grid edges.
+
 The cold parse measurement included parsing and caching a new 9,999-line
 undirected graph.
 
