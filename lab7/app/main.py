@@ -12,6 +12,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 
+MAX_LINK_BYTES = 64 * 1024 * 1024
+
 
 class LocationStore:
     def __init__(self, filename: str):
@@ -123,7 +125,7 @@ class LocationStore:
                 other = self.rows[neighbor]
                 yield neighbor, math.hypot(item[1] - other[1], item[2] - other[2])
 
-    @lru_cache(maxsize=8)
+    @lru_cache(maxsize=2)
     def links(self, text: str):
         if text is None:
             return None
@@ -242,7 +244,10 @@ async def post_search(
     text = None
     if link is not None:
         try:
-            text = (await link.read()).decode("utf-8")
+            body = await link.read(MAX_LINK_BYTES + 1)
+            if len(body) > MAX_LINK_BYTES:
+                raise HTTPException(status_code=413, detail="link file exceeds 64 MiB")
+            text = body.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=422, detail="link must be UTF-8 text") from exc
     return search(lat, long, cat, rad, text)

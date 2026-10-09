@@ -67,3 +67,13 @@ def test_extreme_radius_is_bounded_and_nonfinite_values_are_rejected():
     assert huge.status_code == 200
     assert len(huge.json()) == 10
     assert infinite.status_code == 422
+
+
+def test_link_file_size_is_bounded():
+    client = TestClient(app)
+    response = client.post(
+        "/IP/search/",
+        data={"lat": "0.5", "long": "0.5", "cat": "bank", "rad": "0.1"},
+        files={"link": ("roads.txt", b"0" * (64 * 1024 * 1024 + 1), "text/plain")},
+    )
+    assert response.status_code == 413
