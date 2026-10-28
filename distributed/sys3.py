@@ -7,6 +7,8 @@ from typing import Any, Dict
 
 from flask import Flask, jsonify, request
 
+from app.telemetry import init_telemetry
+
 from .stage_payloads import DEMPayload, ParsedContoursPayload, TerrainPayload
 from .stages import (
     analyze_terrain_stage,
@@ -125,6 +127,7 @@ def create_app() -> Flask:
 
 
 app = create_app()
+init_telemetry(app=app, service_name=os.getenv("OTEL_SERVICE_NAME", "jalasetu-sys3-terrain"))
 
 
 if __name__ == "__main__":

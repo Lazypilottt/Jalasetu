@@ -4,6 +4,7 @@ import MapView from './components/MapView';
 import SiteSummaryPanel from './components/SiteSummaryPanel';
 import CatchmentDetailsPanel from './components/CatchmentDetailsPanel';
 import ProcessingNotesBanner from './components/ProcessingNotesBanner';
+import RainfallPanel from './components/RainfallPanel';
 
 /**
  * Main Jalasetu Application Component
@@ -21,6 +22,7 @@ export default function App() {
   const [analysisError, setAnalysisError] = useState(null);
   const [focusedSite, setFocusedSite] = useState(null);
   const [selectedArea, setSelectedArea] = useState(null);
+  const [customDesignRainfall, setCustomDesignRainfall] = useState(null);
   const [analysisRequestToken, setAnalysisRequestToken] = useState(0);
   const selectionRadiusM = 250;
 
@@ -34,6 +36,7 @@ export default function App() {
     setAnalysisError(null);
     setFocusedSite(null);
     setSelectedArea(null);
+    setCustomDesignRainfall(null);
   };
 
   /**
@@ -45,6 +48,7 @@ export default function App() {
     setAnalysisError(null);
     setFocusedSite(null);
     setSelectedArea(null);
+    setCustomDesignRainfall(null);
     setIsLoading(false);
   };
 
@@ -161,11 +165,14 @@ export default function App() {
             onError={handleAnalysisError}
             analysisRequestToken={analysisRequestToken}
             allowDefaultContour
-            params={selectedArea ? {
-              selected_latitude: selectedArea.latitude,
-              selected_longitude: selectedArea.longitude,
-              selected_radius_m: selectedArea.radiusM,
-            } : {}}
+            params={{
+              ...(selectedArea ? {
+                selected_latitude: selectedArea.latitude,
+                selected_longitude: selectedArea.longitude,
+                selected_radius_m: selectedArea.radiusM,
+              } : {}),
+              ...(customDesignRainfall ? { design_rainfall_mm: customDesignRainfall } : {})
+            }}
           />
 
           <div className="selection-help-card" role="status">
@@ -240,6 +247,17 @@ export default function App() {
 
           {/* 5. Contributing Catchment Basin Hydrology Panel */}
           <CatchmentDetailsPanel catchment={analysisResult?.catchment} />
+
+          {/* 6. Precipitation Regime & Rainfall Analytics Panel */}
+          <RainfallPanel
+            rainfall={analysisResult?.rainfall}
+            onApplyDesignRainfall={(val) => {
+              setCustomDesignRainfall(val);
+              setAnalysisRequestToken((t) => t + 1);
+            }}
+            defaultLat={selectedArea?.latitude || analysisResult?.recommended_site?.latitude || 21.26}
+            defaultLon={selectedArea?.longitude || analysisResult?.recommended_site?.longitude || 81.28}
+          />
         </aside>
 
         {/* Right Main Area: Interactive GIS Map */}

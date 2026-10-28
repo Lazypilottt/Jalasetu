@@ -33,6 +33,8 @@ from shapely.geometry import (
 from shapely.geometry.base import BaseGeometry
 
 from app.utils.geometry import reproject_to_utm
+from opentelemetry import trace
+from app.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,7 @@ class DEMBuilderService:
     def __init__(self):
         pass
 
+    @tracer.start_as_current_span("dem_builder.build_dem")
     def build_dem(
         self,
         contours_gdf: gpd.GeoDataFrame,
@@ -356,6 +359,15 @@ class DEMBuilderService:
             dem_data.min_elevation,
             dem_data.max_elevation,
         )
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("dem.resolution_m", float(dem_data.resolution))
+            current_span.set_attribute("dem.height", dem_data.height)
+            current_span.set_attribute("dem.width", dem_data.width)
+            current_span.set_attribute("dem.crs", str(dem_data.crs))
+            current_span.set_attribute("dem.min_elevation", float(dem_data.min_elevation))
+            current_span.set_attribute("dem.max_elevation", float(dem_data.max_elevation))
+
         return dem_data
 
     def save_geotiff(

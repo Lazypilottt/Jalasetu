@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, 
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ResultsLayer, { computeCombinedResultsBounds, hasValidGeoJSONGeometry } from './ResultsLayer';
+import RaisedReliefModal from './RaisedReliefModal';
 
 // Fix default Leaflet icon paths in Vite / Webpack asset bundling environments
 delete L.Icon.Default.prototype._getIconUrl;
@@ -129,6 +130,21 @@ export function MapLegend({ analysisData, selectedArea = null, isOpen = true, on
               <div className="legend-text-group">
                 <span className="legend-item-label">Location Pin Markers</span>
                 <span className="legend-item-sub">Centroid pins with metrics popup</span>
+              </div>
+            </div>
+          )}
+
+          {/* 5. Elevation Contours Swatch */}
+          {analysisData?.contours_geojson && (
+            <div className="legend-item">
+              <div className="legend-swatch legend-swatch-gradient"></div>
+              <div className="legend-text-group">
+                <span className="legend-item-label">Elevation Contours</span>
+                <span className="legend-item-sub">
+                  {analysisData.input_summary
+                    ? `${analysisData.input_summary.elevation_min}m – ${analysisData.input_summary.elevation_max}m relief`
+                    : 'Terrain elevation lines'}
+                </span>
               </div>
             </div>
           )}
@@ -385,6 +401,8 @@ export default function MapView({
   // Persist user's selected base layer (default to Satellite)
   const [selectedBase, setSelectedBase] = useState('Satellite');
   const [isLegendOpen, setIsLegendOpen] = useState(true);
+  const [isRaisedReliefActive, setIsRaisedReliefActive] = useState(false);
+  const [is3DModalOpen, setIs3DModalOpen] = useState(false);
 
   // 3. Determine if empty state placeholder overlay should be visible
   const hasAnalysisData = Boolean(
@@ -395,12 +413,56 @@ export default function MapView({
   const hasData = Boolean(effectiveBounds || hasAnalysisData || children);
   const isPlaceholderVisible = showPlaceholder !== undefined ? showPlaceholder : !hasData;
 
+  const handleSelectMode = (mode) => {
+    if (mode === 'relief') {
+      setIsRaisedReliefActive(true);
+      setSelectedBase('Raised Relief');
+    } else {
+      setIsRaisedReliefActive(false);
+      setSelectedBase('Satellite');
+    }
+  };
+
   return (
     <div className={`map-view-container ${className}`}>
-      {/* Map Header Overlay Badge */}
-      <div className="map-overlay-badge">
-        <span className="live-dot"></span>
-        <span>Interactive GIS Map</span>
+      {/* Map Header Overlay Badge & Mode Switcher */}
+      <div className="map-top-bar">
+        <div className="map-overlay-badge">
+          <span className="live-dot"></span>
+          <span>Interactive GIS Map</span>
+        </div>
+
+        {/* View Mode Switcher: Satellite vs Raised-Relief */}
+        {hasAnalysisData && (
+          <div className="map-view-mode-bar" role="toolbar" aria-label="Map Presentation Mode">
+            <button
+              type="button"
+              className={`btn-mode-pill ${!isRaisedReliefActive ? 'active' : ''}`}
+              onClick={() => handleSelectMode('satellite')}
+              title="Show Satellite Imagery view"
+            >
+              🛰️ Satellite View
+            </button>
+            <button
+              type="button"
+              className={`btn-mode-pill ${isRaisedReliefActive ? 'active' : ''}`}
+              onClick={() => handleSelectMode('relief')}
+              title="Show Raised-Relief Topographic & Hillshade view"
+            >
+              ⛰️ Raised-Relief Map
+            </button>
+            {analysisData?.dem_mesh && (
+              <button
+                type="button"
+                className="btn-mode-pill btn-mode-3d"
+                onClick={() => setIs3DModalOpen(true)}
+                title="Launch interactive 3D physical surface terrain visualizer"
+              >
+                🌐 3D Surface
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="map-selection-hint" role="status">
@@ -452,6 +514,24 @@ export default function MapView({
                 maxZoom={19}
               />
             </>
+          </LayersControl.BaseLayer>
+
+          <LayersControl.BaseLayer checked={selectedBase === 'Raised Relief'} name="Raised Relief">
+            <>
+              <TileLayer
+                attribution='Tiles &copy; Esri &mdash; World Hillshade & Shaded Relief'
+                url="https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}"
+                maxZoom={19}
+              />
+            </>
+          </LayersControl.BaseLayer>
+
+          <LayersControl.BaseLayer checked={selectedBase === 'Topographic'} name="Topographic">
+            <TileLayer
+              attribution='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
+              url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
+              maxZoom={17}
+            />
           </LayersControl.BaseLayer>
 
           <LayersControl.BaseLayer checked={selectedBase === 'Street'} name="Street">
@@ -521,6 +601,14 @@ export default function MapView({
         {/* Extensible Children for custom markers/overlays */}
         {children}
       </MapContainer>
+
+      {/* 3D Raised-Relief Interactive Terrain Modal */}
+      <RaisedReliefModal
+        isOpen={is3DModalOpen}
+        onClose={() => setIs3DModalOpen(false)}
+        demMesh={analysisData?.dem_mesh}
+        analysisData={analysisData}
+      />
     </div>
   );
 }

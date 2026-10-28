@@ -33,6 +33,8 @@ from app.utils.geometry import (
     vectorize_mask_to_polygon,
     reproject_geometry,
 )
+from opentelemetry import trace
+from app.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +434,7 @@ class CatchmentDelineationService:
     def __init__(self):
         pass
 
+    @tracer.start_as_current_span("catchment_delineation.delineate")
     def delineate(
         self,
         dem_data: DEMData,
@@ -564,6 +567,14 @@ class CatchmentDelineationService:
                 method_used = "flow_accumulation"
                 logger.info("Pysheds delineation succeeded. Cells captured: %d", np.count_nonzero(catchment_mask))
             except Exception as e:
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.add_event("pysheds_fallback")
+                try:
+                    from app.metrics import pysheds_fallback_total
+                    pysheds_fallback_total.add(1)
+                except Exception:
+                    pass
                 logger.warning("Pysheds delineation encountered error (%s). Falling back to Native D8 BFS engine.", e)
                 catchment_mask = None
 
@@ -671,6 +682,12 @@ class CatchmentDelineationService:
             feasibility_data["hydrological_feasibility"],
             silt_risk,
         )
+
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("catchment.area_m2", float(area_m2))
+            current_span.set_attribute("catchment.area_ha", float(area_ha))
+            current_span.set_attribute("catchment.method_used", str(method_used))
 
         return CatchmentResult(
             pour_point_utm=(utm_x, utm_y),

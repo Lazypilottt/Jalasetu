@@ -360,6 +360,25 @@ export async function getCatchmentSchema() {
 }
 
 /**
+ * Fetches location precipitation metrics and seasonal monsoon distribution.
+ *
+ * @param {number} latitude
+ * @param {number} longitude
+ * @returns {Promise<Object>}
+ * @throws {CatchmentApiError}
+ */
+export async function getRainfallData(latitude, longitude) {
+  try {
+    const response = await apiClient.get('/v1/rainfall', {
+      params: { lat: latitude, lon: longitude },
+    });
+    return response.data;
+  } catch (error) {
+    throw normalizeCatchmentError(error);
+  }
+}
+
+/**
  * Backward-compatibility alias for analyzeContourFile.
  */
 export const analyzeContourMap = analyzeContourFile;
@@ -369,6 +388,7 @@ export default {
   analyzeContourMap,
   getHealthStatus,
   getCatchmentSchema,
+  getRainfallData,
   normalizeCatchmentError,
   CatchmentApiError,
   API_BASE_URL,

@@ -103,6 +103,59 @@ class CatchmentSummary(BaseModel):
     water_filling_factor: Optional[float] = Field(None, examples=[3.39], description="Ratio of storm runoff volume to pond storage capacity")
 
 
+class MonthlyRainfall(BaseModel):
+    """Monthly precipitation summary."""
+    month: str = Field(..., examples=["Jul"])
+    month_idx: int = Field(..., examples=[7])
+    rainfall_mm: float = Field(..., examples=[385.2])
+
+
+class HistoricalAnnualRainfall(BaseModel):
+    """Historical annual precipitation."""
+    year: int = Field(..., examples=[2023])
+    rainfall_mm: float = Field(..., examples=[1595.4])
+
+
+class RainfallLocation(BaseModel):
+    """Geographic coordinate for rainfall querying."""
+    latitude: float = Field(..., examples=[21.26])
+    longitude: float = Field(..., examples=[81.28])
+
+
+class RainfallSummary(BaseModel):
+    """Precipitation metrics and climatological regime for watershed planning."""
+    mean_annual_rainfall_mm: float = Field(..., examples=[1420.0], description="Mean annual precipitation in mm")
+    monsoon_rainfall_mm: float = Field(..., examples=[1280.0], description="Monsoon seasonal precipitation in mm (Jun-Sep)")
+    monsoon_share_pct: float = Field(..., examples=[90.1], description="Percentage of annual rain falling during monsoon")
+    design_24h_rainfall_mm: float = Field(..., examples=[115.0], description="24-hr design storm event in mm")
+    recommended_design_rainfall_mm: float = Field(..., examples=[115.0], description="Recommended design storm for SCS-CN runoff modeling")
+    wet_season: str = Field(default="June – September (Monsoon)", description="Primary wet season description")
+    wet_months: List[str] = Field(default_factory=lambda: ["June", "July", "August", "September"])
+    monthly_averages_mm: List[MonthlyRainfall] = Field(default_factory=list, description="Monthly average precipitation breakdown")
+    historical_annual: List[HistoricalAnnualRainfall] = Field(default_factory=list, description="Recent annual precipitation totals")
+    source: str = Field(default="Open-Meteo ERA5 Reanalysis", description="Meteorological data source")
+    is_fallback: bool = Field(default=False, description="Whether regional fallback estimates were used")
+    hydrological_notes: Optional[str] = Field(None, description="Guidance notes on rainfall adequacy and pond sizing")
+
+
+class RainfallResponse(BaseModel):
+    """Top-level API response from /v1/rainfall endpoint."""
+    status: str = Field(default="success", examples=["success"])
+    location: RainfallLocation
+    mean_annual_rainfall_mm: float
+    monsoon_rainfall_mm: float
+    monsoon_share_pct: float
+    design_24h_rainfall_mm: float
+    recommended_design_rainfall_mm: float
+    wet_season: str
+    wet_months: List[str]
+    monthly_averages_mm: List[MonthlyRainfall]
+    historical_annual: List[HistoricalAnnualRainfall]
+    source: str
+    is_fallback: bool
+    hydrological_notes: Optional[str] = None
+
+
 class CatchmentResponse(BaseModel):
     """Master response payload for contour terrain & pond catchment analysis."""
     status: str = Field(
@@ -129,6 +182,15 @@ class CatchmentResponse(BaseModel):
     )
     catchment: Optional[CatchmentSummary] = Field(
         None, description="Delineated upstream catchment contributing to recommended pond site"
+    )
+    rainfall: Optional[RainfallSummary] = Field(
+        None, description="Location-specific rainfall and precipitation regime analysis"
+    )
+    contours_geojson: Optional[Dict[str, Any]] = Field(
+        None, description="Extracted contour lines GeoJSON FeatureCollection with elevation attributes"
+    )
+    dem_mesh: Optional[Dict[str, Any]] = Field(
+        None, description="Downsampled 3D elevation mesh and relief matrix for raised-relief rendering"
     )
     processing_notes: List[str] = Field(
         default_factory=list,

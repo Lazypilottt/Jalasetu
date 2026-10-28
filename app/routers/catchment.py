@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
 from starlette.concurrency import run_in_threadpool
 
 from app.models.schemas import CatchmentResponse, HealthResponse
@@ -230,6 +231,11 @@ async def analyze_contour(
                 detail="Uploaded file is empty (0 bytes).",
             )
 
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("upload.format", ext)
+            current_span.set_attribute("upload.size_bytes", file_size)
+
         # Integrity check for KMZ (must be valid zip archive containing .kml)
         if ext == ".kmz":
             if not zipfile.is_zipfile(temp_path):
@@ -319,7 +325,7 @@ async def analyze_contour(
             try:
                 os.unlink(temp_path)
             except OSError as cleanup_err:
-                logger.debug("Failed to delete temp file %s: %s", temp_path, cleanup_err)
+                logger.debug("Failed to delete temporary upload file: %s", cleanup_err)
 
 
 @router.get(

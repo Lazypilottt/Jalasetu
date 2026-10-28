@@ -236,6 +236,37 @@ export default function ResultsLayer({ data = null }) {
 
   return (
     <>
+      {/* 0. Elevation Contour Lines Overlay */}
+      {data?.contours_geojson && hasValidGeoJSONGeometry(data.contours_geojson) && (
+        <GeoJSON
+          key={`contours-overlay-${data.input_summary?.num_contours || 'all'}`}
+          data={data.contours_geojson}
+          style={(feature) => {
+            const elev = feature?.properties?.elevation;
+            const minE = data.input_summary?.elevation_min ?? 0;
+            const maxE = data.input_summary?.elevation_max ?? 100;
+            const norm = Math.max(0, Math.min(1, (elev - minE) / Math.max(1, maxE - minE)));
+            // Dynamic chromatic elevation gradient: Teal -> Amber -> Terracotta
+            let strokeColor = '#10b981';
+            if (norm > 0.6) strokeColor = '#e11d48';
+            else if (norm > 0.3) strokeColor = '#f59e0b';
+            return {
+              color: strokeColor,
+              weight: norm > 0.8 || norm < 0.2 ? 2.0 : 1.2,
+              opacity: 0.75,
+            };
+          }}
+          onEachFeature={(feature, layer) => {
+            if (feature?.properties?.elevation !== undefined) {
+              layer.bindTooltip(`Elev: ${feature.properties.elevation}m`, {
+                sticky: true,
+                className: 'contour-elevation-tooltip',
+              });
+            }
+          }}
+        />
+      )}
+
       {/* 1. Catchment Watershed Drainage Polygon Overlay (Translucent Blue) */}
       {hasValidGeoJSONGeometry(catchment?.boundary_geojson) && (
         <GeoJSON
