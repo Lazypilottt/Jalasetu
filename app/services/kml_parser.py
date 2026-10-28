@@ -42,6 +42,8 @@ from app.utils.geometry import (
     calculate_utm_crs_from_gdf,
     reproject_to_utm,
 )
+from opentelemetry import trace
+from app.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +392,7 @@ class KMLParserService:
 
         return raw_bytes
 
+    @tracer.start_as_current_span("kml_parser.parse")
     def parse(
         self,
         file_source: Union[str, Path, BinaryIO, bytes],
@@ -403,6 +406,10 @@ class KMLParserService:
         Returns:
             gpd.GeoDataFrame: GeoDataFrame with columns ['elevation', 'geometry'] in EPSG:4326.
         """
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("kml.source_type", type(file_source).__name__)
+
         kml_bytes = self._read_kml_bytes(file_source)
 
         try:
@@ -477,6 +484,8 @@ class KMLParserService:
         gdf = gdf.dropna(subset=["elevation"]).reset_index(drop=True)
 
         logger.info("Successfully parsed %d contour features from KML.", len(gdf))
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("kml.num_features", len(gdf))
         return gdf
 
     def to_utm(self, gdf: gpd.GeoDataFrame) -> Tuple[gpd.GeoDataFrame, int]:

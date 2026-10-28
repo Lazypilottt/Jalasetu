@@ -8,7 +8,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import catchment
 from app.routers import locations
+from app.routers import rainfall
 from app.models.schemas import HealthResponse
+from app.telemetry import init_telemetry
 
 # OpenAPI Tag Metadata
 tags_metadata = [
@@ -62,6 +64,12 @@ app.add_middleware(
 app.include_router(catchment.router, tags=["Catchment Analysis"])
 app.include_router(catchment.router, prefix="/catchment", tags=["Catchment Analysis"], include_in_schema=False)
 app.include_router(locations.router, tags=["Location Recommendations"])
+app.include_router(rainfall.router, prefix="/v1/rainfall", tags=["Rainfall & Climate Analytics"])
+app.include_router(rainfall.router, prefix="/api/rainfall", tags=["Rainfall & Climate Analytics"], include_in_schema=False)
+
+
+# Initialize OpenTelemetry (traces, metrics, logs via OTLP gRPC)
+init_telemetry(app=app)
 
 
 @app.get(

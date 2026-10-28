@@ -23,7 +23,13 @@ from app.models.schemas import (
     ElevationRange,
     InputSummary,
     PondSiteSummary,
+    RainfallSummary,
 )
+import time
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+from app.telemetry import tracer, init_telemetry
+from app.metrics import analyses_total, analysis_duration, stage_duration, runoff_volume
 from app.services.location_search import recommend_locations
 
 from .config import ServiceConfig
@@ -63,6 +69,12 @@ PARAM_TYPES = {
     "design_rainfall_mm": float,
     "curve_number": float,
     "use_pysheds": lambda value: str(value).lower() in ("1", "true", "yes", "on"),
+    "selected_latitude": float,
+    "selected_longitude": float,
+    "selected_radius_m": float,
+    "lat": float,
+    "lon": float,
+    "radius": float,
 }
 
 
@@ -78,18 +90,33 @@ def _params_from_request() -> Dict[str, Any]:
         value = raw.get(key) if hasattr(raw, "get") else None
         if value not in (None, ""):
             result[key] = converter(value)
+
+    if "lat" in result and "selected_latitude" not in result:
+        result["selected_latitude"] = result["lat"]
+    if "lon" in result and "selected_longitude" not in result:
+        result["selected_longitude"] = result["lon"]
+    if "radius" in result and "selected_radius_m" not in result:
+        result["selected_radius_m"] = result["radius"]
+
+    rad = result.get("selected_radius_m")
+    if rad is not None and (rad < 10.0 or rad > 2000.0):
+        raise ValueError(f"selected_radius_m ({rad}m) must be between 10m and 2000m")
+
     return result
 
 
-def _uploaded_bytes() -> bytes:
+def _uploaded_bytes() -> tuple[bytes, bool]:
     upload = request.files.get("contour_map") or request.files.get("file")
     if upload is not None:
-        return upload.read()
+        return upload.read(), True
     body = request.get_json(silent=True) or {}
     encoded = body.get("file_base64")
-    if not encoded:
-        raise ValueError("request must contain a multipart file or file_base64")
-    return base64.b64decode(encoded, validate=True)
+    if encoded:
+        return base64.b64decode(encoded, validate=True), True
+    bundled_kml = Path(__file__).resolve().parent.parent / "contours_1m.kml"
+    if bundled_kml.exists():
+        return bundled_kml.read_bytes(), False
+    raise ValueError("request must contain a multipart file or file_base64")
 
 
 class Gateway:
@@ -142,18 +169,61 @@ class Gateway:
         terrain = analyze_terrain_stage(dem, params)
         return terrain, rank_pond_sites_stage(terrain, params)
 
-    def analyze(self, file_bytes: bytes, params: Optional[Dict[str, Any]] = None) -> CatchmentResponse:
+    def analyze(self, file_bytes: bytes, params: Optional[Dict[str, Any]] = None, has_upload: bool = True) -> CatchmentResponse:
         params = params or {}
-        contours, dem = self._prepare(file_bytes, params)
-        if not contours.features:
-            return CatchmentResponse(
-                status="error",
-                message="No valid contour features with elevation data could be extracted from the file.",
-                processing_notes=["No contour features found."],
-            )
-        terrain, ranking = self._analyze(dem, params)
-        catchment = delineate_catchment_stage(terrain, ranking, params)
-        return _public_response(contours, dem, terrain, ranking, catchment)
+        t_start = time.perf_counter()
+        with tracer.start_as_current_span("analyze_contour") as parent_span:
+            parent_span.set_attribute("has_upload", bool(has_upload))
+            if params.get("dem_resolution_m") is not None:
+                parent_span.set_attribute("dem_resolution_m", float(params["dem_resolution_m"]))
+
+            try:
+                contours, dem = self._prepare(file_bytes, params)
+                if not contours.features:
+                    raise ValueError("No valid contour features with elevation data could be extracted from the file.")
+                terrain, ranking = self._analyze(dem, params)
+                catchment = delineate_catchment_stage(terrain, ranking, params)
+
+                # Child span 6: estimate_runoff
+                t_runoff = time.perf_counter()
+                logger.info("Starting estimate_runoff stage")
+                runoff_vol = 0.0
+                with tracer.start_as_current_span("estimate_runoff") as runoff_span:
+                    try:
+                        if catchment and catchment.scs_runoff:
+                            runoff_vol = float(catchment.scs_runoff.get("estimated_runoff_volume_m3") or 0.0)
+                        runoff_volume.record(runoff_vol)
+                        dur_runoff = time.perf_counter() - t_runoff
+                        stage_duration.record(dur_runoff, {"stage": "estimate_runoff"})
+                        logger.info("Completed estimate_runoff stage in %.2f ms, runoff_volume_m3=%.1f", dur_runoff * 1000, runoff_vol)
+                    except Exception as exc:
+                        runoff_span.record_exception(exc)
+                        runoff_span.set_status(StatusCode.ERROR, str(exc))
+                        logger.error("estimate_runoff stage failed: %s", exc, exc_info=True)
+                        raise
+
+                resp = _public_response(contours, dem, terrain, ranking, catchment)
+
+                # Set parent span attributes
+                parent_span.set_attribute("dem_resolution_m", float(dem.resolution))
+                parent_span.set_attribute("num_contours", int(len(contours.features)))
+                parent_span.set_attribute("candidate_count", int(len(ranking.candidates)))
+                if catchment:
+                    parent_span.set_attribute("catchment_area_m2", float(catchment.area_m2))
+                    parent_span.set_attribute("runoff_volume_m3", float(runoff_vol))
+                    parent_span.set_attribute("routing_method", str(catchment.method_used))
+
+                dur_total = time.perf_counter() - t_start
+                analysis_duration.record(dur_total)
+                analyses_total.add(1, {"status": "success"})
+                return resp
+            except Exception as exc:
+                dur_total = time.perf_counter() - t_start
+                analysis_duration.record(dur_total)
+                analyses_total.add(1, {"status": "error"})
+                parent_span.record_exception(exc)
+                parent_span.set_status(StatusCode.ERROR, str(exc))
+                raise
 
 
 def _public_response(
@@ -235,6 +305,63 @@ def _public_response(
             water_filling_factor=feasibility.get("water_filling_factor"),
         )
         notes.append(f"Delineated upstream catchment: area={catchment.area_ha:.2f} ha.")
+
+    # Lightweight contour GeoJSON
+    contours_geojson = None
+    try:
+        sample_features = contours.features
+        if len(sample_features) > 120:
+            step = max(1, len(sample_features) // 120)
+            sample_features = sample_features[::step]
+        contours_geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"elevation": round(float(f["elevation"]), 1)},
+                    "geometry": f["geometry"],
+                }
+                for f in sample_features
+            ],
+        }
+    except Exception:
+        pass
+
+    # Downsampled 3D DEM mesh for raised-relief viewer
+    dem_mesh = None
+    try:
+        import numpy as np
+        arr = dem.to_dem_data().array
+        nrows, ncols = arr.shape
+        r_step = max(1, nrows // 50)
+        c_step = max(1, ncols // 50)
+        sampled = arr[::r_step, ::c_step]
+        cleaned = np.where(np.isnan(sampled) | (sampled == dem.nodata), float(np.nanmin(arr)), sampled)
+        dem_mesh = {
+            "rows": int(cleaned.shape[0]),
+            "cols": int(cleaned.shape[1]),
+            "elevation_min": round(float(np.nanmin(arr)), 1),
+            "elevation_max": round(float(np.nanmax(arr)), 1),
+            "relief_m": round(float(np.nanmax(arr) - np.nanmin(arr)), 1),
+            "bounds": list(dem.bounds),
+            "grid": [[round(float(v), 1) for v in row] for row in cleaned],
+        }
+    except Exception:
+        pass
+
+    # Location-specific precipitation regime
+    rainfall_summary = None
+    try:
+        if sites:
+            c_lat = float(sites[0].latitude)
+            c_lon = float(sites[0].longitude)
+            from app.services.rainfall_service import RainfallService
+            rain_svc = RainfallService()
+            rain_data = rain_svc.get_rainfall_data(c_lat, c_lon)
+            rainfall_summary = RainfallSummary(**rain_data)
+    except Exception:
+        pass
+
     return CatchmentResponse(
         status="success" if catchment_summary is not None else "partial_success",
         message="Contour analysis and pond catchment delineation completed successfully.",
@@ -242,6 +369,9 @@ def _public_response(
         recommended_site=sites[0],
         alternative_sites=sites[1:],
         catchment=catchment_summary,
+        rainfall=rainfall_summary,
+        contours_geojson=contours_geojson,
+        dem_mesh=dem_mesh,
         processing_notes=notes,
     )
 
@@ -254,6 +384,23 @@ def create_app(config: Optional[ServiceConfig] = None) -> Flask:
     @app.get("/health")
     def health():
         return jsonify({"status": "ok", "service": "sys4", "message": "sys4 gateway is running"})
+
+    @app.route("/v1/rainfall", methods=["GET", "POST"])
+    @app.route("/api/rainfall", methods=["GET", "POST"])
+    def rainfall_endpoint():
+        from app.services.rainfall_service import RainfallService
+        values = request.args if request.method == "GET" else (request.get_json(silent=True) or request.form)
+        lat_val = values.get("lat") or values.get("latitude")
+        lon_val = values.get("lon") or values.get("longitude")
+        if lat_val is None or lon_val is None:
+            return jsonify({"error": "lat and lon are required parameters"}), 400
+        try:
+            lat = float(lat_val)
+            lon = float(lon_val)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid numerical coordinates"}), 422
+        svc = RainfallService()
+        return jsonify(svc.get_rainfall_data(lat, lon))
 
     @app.get("/analyzeContour/schema")
     def schema():
@@ -298,7 +445,9 @@ def create_app(config: Optional[ServiceConfig] = None) -> Flask:
     @app.post("/v1/analyze")
     def analyze():
         try:
-            result = gateway.analyze(_uploaded_bytes(), _params_from_request())
+            file_bytes, has_upload = _uploaded_bytes()
+            params = _params_from_request()
+            result = gateway.analyze(file_bytes, params, has_upload=has_upload)
             status = 200 if result.status != "error" else 422
             return jsonify(result.model_dump()), status
         except requests.RequestException:
@@ -316,6 +465,7 @@ def create_app(config: Optional[ServiceConfig] = None) -> Flask:
 
 
 app = create_app()
+init_telemetry(app=app, service_name=os.getenv("OTEL_SERVICE_NAME", "jalasetu-sys4-gateway"))
 
 
 if __name__ == "__main__":

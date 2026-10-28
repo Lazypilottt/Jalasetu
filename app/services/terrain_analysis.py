@@ -20,6 +20,8 @@ import numpy as np
 from scipy.ndimage import minimum_filter, maximum_filter, uniform_filter
 
 from app.services.dem_builder import DEMData
+from opentelemetry import trace
+from app.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +224,7 @@ class TerrainAnalysisService:
 
         return twi_raw.astype(np.float64), twi_score.astype(np.float64)
 
+    @tracer.start_as_current_span("terrain_analysis.analyze_terrain")
     def analyze_terrain(
         self,
         dem_data: DEMData,
@@ -317,7 +320,7 @@ class TerrainAnalysisService:
             float(np.count_nonzero(suitable_mask) / suitable_mask.size * 100.0),
         )
 
-        return TerrainAnalysisResult(
+        res = TerrainAnalysisResult(
             slope_degrees=slope_deg.astype(np.float32),
             slope_percent=slope_pct.astype(np.float32),
             depression_index=depression_score.astype(np.float32),
@@ -330,6 +333,14 @@ class TerrainAnalysisService:
             flow_accum=flow_accum_arr.astype(np.float32),
             flow_dir=flow_dir_arr,
         )
+
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("terrain.mean_slope_deg", float(res.mean_slope_deg))
+            current_span.set_attribute("terrain.mean_suitability", float(res.mean_suitability))
+            current_span.set_attribute("terrain.suitable_area_percentage", float(res.suitable_area_percentage))
+
+        return res
 
     def save_geotiff(
         self,

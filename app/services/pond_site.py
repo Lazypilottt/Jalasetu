@@ -23,6 +23,8 @@ from shapely.ops import unary_union
 
 from app.services.dem_builder import DEMData
 from app.services.terrain_analysis import TerrainAnalysisResult
+from opentelemetry import trace as otel_trace
+from app.telemetry import tracer
 from app.utils.geometry import (
     rowcol_to_utm,
     vectorize_mask_to_polygon,
@@ -230,6 +232,7 @@ class PondSiteService:
 
         return storage_capacity_m3, cut_volume_m3, storage_efficiency_ratio, curve
 
+    @tracer.start_as_current_span("pond_site.identify_candidate_sites")
     def identify_candidate_sites(
         self,
         analysis_result: TerrainAnalysisResult,
@@ -288,6 +291,9 @@ class PondSiteService:
 
         if not np.any(mask):
             logger.warning("No cells met the minimum suitability threshold (>= %.1f).", min_suitability_threshold)
+            current_span = otel_trace.get_current_span()
+            if current_span and current_span.is_recording():
+                current_span.set_attribute("pond.candidates_count", 0)
             return PondSitingResult(
                 candidates=[],
                 labeled_raster=np.zeros(suitability.shape, dtype=int),
@@ -503,6 +509,14 @@ class PondSiteService:
             rejected_elongated,
             rejected_narrow,
         )
+
+        current_span = otel_trace.get_current_span()
+        if current_span and current_span.is_recording():
+            current_span.set_attribute("pond.candidates_count", len(final_candidates))
+            if final_candidates:
+                current_span.set_attribute("pond.top_site_id", str(final_candidates[0].site_id))
+                current_span.set_attribute("pond.top_suitability_score", float(final_candidates[0].mean_suitability))
+                current_span.set_attribute("pond.top_storage_capacity_m3", float(final_candidates[0].storage_capacity_m3))
 
         return PondSitingResult(
             candidates=final_candidates,
