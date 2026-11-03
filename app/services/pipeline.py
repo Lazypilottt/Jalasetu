@@ -16,6 +16,7 @@ Provides:
 import gc
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional, Union
 
@@ -41,6 +42,7 @@ from app.models.schemas import (
     ElevationRange,
     SelectedAreaSummary,
     RainfallSummary,
+    InfrastructureSummary,
 )
 from app.services.kml_parser import KMLParserService
 from app.services.dem_builder import DEMBuilderService
@@ -48,10 +50,26 @@ from app.services.terrain_analysis import TerrainAnalysisService
 from app.services.pond_site import PondSiteService
 from app.services.catchment_delineation import CatchmentDelineationService
 from app.services.rainfall_service import RainfallService
+from app.services import exclusions as exclusion_service
+from app.services.infrastructure import fetch_infrastructure
+from app.services.terrain_source import (
+    SOURCE_LABEL as GLOBAL_DEM_LABEL,
+    dem_bounds_wgs84,
+    fetch_global_dem,
+    point_in_bundled_extent,
+)
 
 logger = logging.getLogger(__name__)
 
 # Complete dictionary of tunable parameters with production-ready defaults
+# How long ranking waits for the background infrastructure lookup.
+INFRASTRUCTURE_WAIT_S = 50.0
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 DEFAULT_PIPELINE_PARAMS: Dict[str, Any] = {
     # --- DEM Builder Parameters ---
     "dem_resolution_m": None,           # Optional float (e.g. 5.0). If None, data-driven adaptive resolution is used.
@@ -71,6 +89,7 @@ DEFAULT_PIPELINE_PARAMS: Dict[str, Any] = {
     "min_pond_area_m2": 200.0,          # Minimum contiguous footprint in m² required for a viable farm pond.
     "max_pond_area_m2": None,           # Optional maximum footprint in m².
     "max_candidate_sites": 5,           # Maximum number of ranked candidate sites to return.
+    "max_pond_footprint_m2": 20000.0,   # Oversized flat regions are carved to this footprint (2 ha) around their best cell.
     "max_elongation_ratio": 3.5,        # Maximum allowable major-to-minor axis ratio (rejects linear road/channel corridors).
     "min_pond_width_m": None,           # Minimum allowable excavation width in meters (derived from cell size if None).
     "pond_design_depth_m": 2.0,         # Standard pond design water depth in meters for volumetric capacity calculations.
@@ -80,6 +99,13 @@ DEFAULT_PIPELINE_PARAMS: Dict[str, Any] = {
     "use_pysheds": True,                # Attempt pysheds hydrological flow accumulation first (with native D8 fallback).
     "design_rainfall_mm": 100.0,        # 24-hr design storm precipitation in mm for SCS-CN runoff volume estimation.
     "curve_number": 75.0,               # SCS Runoff Curve Number (CN) for agricultural / cultivated soils.
+
+    # --- Terrain Source & Existing Infrastructure ---
+    "terrain_source": "auto",           # 'auto' | 'contours' | 'global_dem' (global DEM when no contour map covers the point).
+    "avoid_infrastructure": True,       # Mask OSM rivers, tanks, buildings, schools, roads, wells out of siting.
+    "exclusion_categories": None,       # Comma-separated subset of infrastructure categories (None = all).
+    "exclusion_buffer_scale": 1.0,      # Multiplier on each category's safety buffer.
+    "manual_exclusions": None,          # JSON list of {lat, lon, radius_m, label} user-marked no-build zones.
 }
 
 
@@ -103,7 +129,9 @@ def analyze_contour_file(
         config.update(params)
 
     # Determine whether this is an uploaded file or bundled default
-    is_bundled = isinstance(file_source, (str, Path)) and "contours_1m.kml" in str(file_source)
+    is_bundled = bool(config.get("using_bundled_contours")) or (
+        isinstance(file_source, (str, Path)) and "contours_1m.kml" in str(file_source)
+    )
     has_upload = not is_bundled
 
     pipeline_start = time.perf_counter()
@@ -129,104 +157,165 @@ def analyze_contour_file(
                     f"Prioritizing candidate sites within the selected {float(selected_radius):.0f}m map radius."
                 )
 
-            # =========================================================================
-            # Step 1: KML / KMZ Parsing
-            # =========================================================================
-            t0 = time.perf_counter()
-            logger.info("Starting parse_contours stage")
-            with tracer.start_as_current_span("parse_contours") as stage_span:
+            # Without a contour file, a point outside the bundled contours is
+            # analysed on the global elevation source instead.
+            terrain_mode = str(config.get("terrain_source") or "auto").lower()
+            use_global = terrain_mode == "global_dem" or (
+                is_bundled
+                and terrain_mode != "contours"
+                and selected_area is not None
+                and not point_in_bundled_extent(selected_area.latitude, selected_area.longitude)
+            )
+            if use_global and selected_area is None:
+                raise ValueError("Select a point on the map to analyse it with the global elevation source.")
+            terrain_source = "global_dem" if use_global else ("bundled_contours" if is_bundled else "uploaded_contours")
+            parent_span.set_attribute("terrain_source", terrain_source)
+
+            # Existing infrastructure is fetched in the background while the DEM
+            # is built, then masked out of the suitability raster before ranking.
+            avoid_infra = selected_area is not None and _truthy(config.get("avoid_infrastructure", True))
+            manual_zones = exclusion_service.parse_manual_zones(config.get("manual_exclusions"))
+            survey_radius_m = exclusion_service.survey_radius_for(selected_area.radius_m) if selected_area else None
+            infra_pool = ThreadPoolExecutor(max_workers=1) if avoid_infra else None
+            infra_future = (
+                infra_pool.submit(fetch_infrastructure, selected_area.latitude, selected_area.longitude, survey_radius_m)
+                if infra_pool else None
+            )
+
+            if not use_global:
+                # =========================================================================
+                # Step 1: KML / KMZ Parsing
+                # =========================================================================
+                t0 = time.perf_counter()
+                logger.info("Starting parse_contours stage")
+                with tracer.start_as_current_span("parse_contours") as stage_span:
+                    try:
+                        kml_parser = KMLParserService()
+                        contours_gdf = kml_parser.parse(file_source)
+                        if contours_gdf is None or contours_gdf.empty:
+                            raise ValueError("No valid contour features with elevation data could be extracted.")
+                        num_contours = len(contours_gdf)
+                        min_contour_elev = float(contours_gdf["elevation"].min())
+                        max_contour_elev = float(contours_gdf["elevation"].max())
+                        stage_span.set_attribute("num_contours", num_contours)
+                        dur = time.perf_counter() - t0
+                        stage_duration.record(dur, {"stage": "parse_contours"})
+                        logger.info("Completed parse_contours stage in %.2f ms, num_contours=%d", dur * 1000, num_contours)
+                    except Exception as e:
+                        stage_span.record_exception(e)
+                        stage_span.set_status(StatusCode.ERROR, str(e))
+                        logger.error("parse_contours stage failed: %s", e, exc_info=True)
+                        raise
+
+                parent_span.set_attribute("num_contours", int(num_contours))
+
+                input_min_lon, input_min_lat, input_max_lon, input_max_lat = (
+                    float(value) for value in contours_gdf.total_bounds
+                )
+                processing_notes.append(
+                    f"Parsed {num_contours} contour lines with elevations ranging from {min_contour_elev:.1f}m to {max_contour_elev:.1f}m."
+                )
+
+                # =========================================================================
+                # Step 2: DEM Construction & Local UTM Reprojection
+                # =========================================================================
+                t0 = time.perf_counter()
+                logger.info("Starting build_dem stage")
+                with tracer.start_as_current_span("build_dem") as stage_span:
+                    try:
+                        dem_builder = DEMBuilderService()
+                        dem_data = dem_builder.build_dem(
+                            contours_gdf=contours_gdf,
+                            resolution=config.get("dem_resolution_m"),
+                            sample_spacing=config.get("sample_spacing_m"),
+                            method=config.get("interpolation_method", "linear"),
+                        )
+                        dur = time.perf_counter() - t0
+                        stage_duration.record(dur, {"stage": "build_dem"})
+                        logger.info("Completed build_dem stage in %.2f ms, resolution=%.1fm", dur * 1000, dem_data.resolution)
+                    except Exception as e:
+                        stage_span.record_exception(e)
+                        stage_span.set_status(StatusCode.ERROR, str(e))
+                        logger.error("build_dem stage failed: %s", e, exc_info=True)
+                        raise
+
+                parent_span.set_attribute("dem_resolution_m", float(dem_data.resolution))
+
+                input_summary = InputSummary(
+                    num_contours=num_contours,
+                    elevation_min=min_contour_elev,
+                    elevation_max=max_contour_elev,
+                    dem_resolution_m=dem_data.resolution,
+                    utm_crs=dem_data.crs,
+                )
+                processing_notes.append(
+                    f"Generated DEM grid: {dem_data.height}x{dem_data.width} cells at {dem_data.resolution:.1f}m resolution in {dem_data.crs}."
+                )
+
+                # Build lightweight GeoJSON feature collection for 2D/3D raised-relief visualization
+                contours_geojson = None
                 try:
-                    kml_parser = KMLParserService()
-                    contours_gdf = kml_parser.parse(file_source)
-                    if contours_gdf is None or contours_gdf.empty:
-                        raise ValueError("No valid contour features with elevation data could be extracted.")
-                    num_contours = len(contours_gdf)
-                    min_contour_elev = float(contours_gdf["elevation"].min())
-                    max_contour_elev = float(contours_gdf["elevation"].max())
-                    stage_span.set_attribute("num_contours", num_contours)
-                    dur = time.perf_counter() - t0
-                    stage_duration.record(dur, {"stage": "parse_contours"})
-                    logger.info("Completed parse_contours stage in %.2f ms, num_contours=%d", dur * 1000, num_contours)
-                except Exception as e:
-                    stage_span.record_exception(e)
-                    stage_span.set_status(StatusCode.ERROR, str(e))
-                    logger.error("parse_contours stage failed: %s", e, exc_info=True)
-                    raise
+                    sample_gdf = contours_gdf
+                    if len(sample_gdf) > 120:
+                        step = max(1, len(sample_gdf) // 120)
+                        sample_gdf = sample_gdf.iloc[::step].copy()
+                    else:
+                        sample_gdf = sample_gdf.copy()
 
-            parent_span.set_attribute("num_contours", int(num_contours))
+                    sample_gdf["geometry"] = sample_gdf["geometry"].simplify(0.0001, preserve_topology=True)
+                    contours_geojson = {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"elevation": round(float(row.elevation), 1)},
+                                "geometry": mapping(row.geometry),
+                            }
+                            for row in sample_gdf.itertuples()
+                            if row.geometry is not None and not row.geometry.is_empty
+                        ],
+                    }
+                except Exception as exc:
+                    logger.warning("Could not construct contours GeoJSON: %s", exc)
 
-            input_min_lon, input_min_lat, input_max_lon, input_max_lat = (
-                float(value) for value in contours_gdf.total_bounds
-            )
-            processing_notes.append(
-                f"Parsed {num_contours} contour lines with elevations ranging from {min_contour_elev:.1f}m to {max_contour_elev:.1f}m."
-            )
-
-            # =========================================================================
-            # Step 2: DEM Construction & Local UTM Reprojection
-            # =========================================================================
-            t0 = time.perf_counter()
-            logger.info("Starting build_dem stage")
-            with tracer.start_as_current_span("build_dem") as stage_span:
-                try:
-                    dem_builder = DEMBuilderService()
-                    dem_data = dem_builder.build_dem(
-                        contours_gdf=contours_gdf,
-                        resolution=config.get("dem_resolution_m"),
-                        sample_spacing=config.get("sample_spacing_m"),
-                        method=config.get("interpolation_method", "linear"),
-                    )
-                    dur = time.perf_counter() - t0
-                    stage_duration.record(dur, {"stage": "build_dem"})
-                    logger.info("Completed build_dem stage in %.2f ms, resolution=%.1fm", dur * 1000, dem_data.resolution)
-                except Exception as e:
-                    stage_span.record_exception(e)
-                    stage_span.set_status(StatusCode.ERROR, str(e))
-                    logger.error("build_dem stage failed: %s", e, exc_info=True)
-                    raise
-
-            parent_span.set_attribute("dem_resolution_m", float(dem_data.resolution))
-
-            input_summary = InputSummary(
-                num_contours=num_contours,
-                elevation_min=min_contour_elev,
-                elevation_max=max_contour_elev,
-                dem_resolution_m=dem_data.resolution,
-                utm_crs=dem_data.crs,
-            )
-            processing_notes.append(
-                f"Generated DEM grid: {dem_data.height}x{dem_data.width} cells at {dem_data.resolution:.1f}m resolution in {dem_data.crs}."
-            )
-
-            # Build lightweight GeoJSON feature collection for 2D/3D raised-relief visualization
-            contours_geojson = None
-            try:
-                sample_gdf = contours_gdf
-                if len(sample_gdf) > 120:
-                    step = max(1, len(sample_gdf) // 120)
-                    sample_gdf = sample_gdf.iloc[::step].copy()
-                else:
-                    sample_gdf = sample_gdf.copy()
-
-                sample_gdf["geometry"] = sample_gdf["geometry"].simplify(0.0001, preserve_topology=True)
-                contours_geojson = {
-                    "type": "FeatureCollection",
-                    "features": [
-                        {
-                            "type": "Feature",
-                            "properties": {"elevation": round(float(row.elevation), 1)},
-                            "geometry": mapping(row.geometry),
-                        }
-                        for row in sample_gdf.itertuples()
-                        if row.geometry is not None and not row.geometry.is_empty
-                    ],
-                }
-            except Exception as exc:
-                logger.warning("Could not construct contours GeoJSON: %s", exc)
-
-            # Free contour GeoDataFrame
-            del contours_gdf
-            gc.collect()
+                # Free contour GeoDataFrame
+                del contours_gdf
+                gc.collect()
+            else:
+                # =====================================================================
+                # Steps 1-2 (global): DEM from terrain tiles around the selected point
+                # =====================================================================
+                t0 = time.perf_counter()
+                with tracer.start_as_current_span("build_dem") as stage_span:
+                    try:
+                        dem_data = fetch_global_dem(
+                            selected_area.latitude,
+                            selected_area.longitude,
+                            half_size_m=max(800.0, 2.0 * survey_radius_m),
+                            resolution_m=config.get("dem_resolution_m"),
+                        )
+                        stage_span.set_attribute("terrain_source", "global_dem")
+                        stage_duration.record(time.perf_counter() - t0, {"stage": "build_dem"})
+                    except Exception as e:
+                        stage_span.record_exception(e)
+                        stage_span.set_status(StatusCode.ERROR, str(e))
+                        raise
+                num_contours = 0
+                input_min_lon, input_min_lat, input_max_lon, input_max_lat = dem_bounds_wgs84(dem_data)
+                input_summary = InputSummary(
+                    num_contours=0,
+                    elevation_min=round(dem_data.min_elevation, 1),
+                    elevation_max=round(dem_data.max_elevation, 1),
+                    dem_resolution_m=dem_data.resolution,
+                    utm_crs=dem_data.crs,
+                )
+                contours_geojson = None
+                processing_notes.append(
+                    f"No contour map covers this point; built a {dem_data.height}x{dem_data.width} DEM at "
+                    f"{dem_data.resolution:.0f}m from {GLOBAL_DEM_LABEL}. Elevations range "
+                    f"{dem_data.min_elevation:.1f}m to {dem_data.max_elevation:.1f}m. Upload a surveyed contour "
+                    "map for engineering-grade results."
+                )
 
             # Build downsampled 3D elevation mesh for fast interactive raised-relief client rendering
             dem_mesh = None
@@ -253,8 +342,8 @@ def analyze_contour_file(
             # Query location rainfall data for centroid
             rainfall_summary = None
             try:
-                centroid_lat = (input_min_lat + input_max_lat) / 2.0
-                centroid_lon = (input_min_lon + input_max_lon) / 2.0
+                centroid_lat = selected_area.latitude if selected_area else (input_min_lat + input_max_lat) / 2.0
+                centroid_lon = selected_area.longitude if selected_area else (input_min_lon + input_max_lon) / 2.0
                 rain_svc = RainfallService()
                 rain_data = rain_svc.get_rainfall_data(centroid_lat, centroid_lon)
                 rainfall_summary = RainfallSummary(**rain_data)
@@ -299,6 +388,35 @@ def analyze_contour_file(
                     logger.error("terrain_analysis stage failed: %s", e, exc_info=True)
                     raise
 
+            infrastructure_summary = None
+            if selected_area is not None and (avoid_infra or manual_zones):
+                infra = {"status": "disabled"}
+                if infra_future is not None:
+                    try:
+                        infra = infra_future.result(timeout=INFRASTRUCTURE_WAIT_S)
+                    except FutureTimeout:
+                        infra = {"status": "unavailable", "message": "Infrastructure lookup timed out."}
+                    finally:
+                        infra_pool.shutdown(wait=False)
+                with tracer.start_as_current_span("exclude_infrastructure") as stage_span:
+                    plan = exclusion_service.plan_exclusions(
+                        infra, selected_area.latitude, selected_area.longitude, survey_radius_m,
+                        categories=config.get("exclusion_categories"),
+                        buffer_scale=float(config.get("exclusion_buffer_scale") or 1.0),
+                        manual_zones=manual_zones,
+                    )
+                    stats = exclusion_service.apply_exclusions(
+                        analysis_result, plan["zones"], plan["survey"] if plan["apply_survey"] else None
+                    )
+                    outcome = exclusion_service.summarize(
+                        infra, plan, stats, config.get("exclusion_categories"), float(config.get("exclusion_buffer_scale") or 1.0)
+                    )
+                    infrastructure_summary = InfrastructureSummary(**outcome["summary"])
+                    stage_span.set_attribute("infrastructure.status", infra.get("status", "disabled"))
+                    stage_span.set_attribute("infrastructure.masked_cells", int(stats["zone_cells"]))
+                    if outcome["note"]:
+                        processing_notes.append(outcome["note"])
+
             # =========================================================================
             # Step 4: Candidate Pond Site Identification & Ranking
             # =========================================================================
@@ -317,6 +435,7 @@ def analyze_contour_file(
                         min_width_m=config.get("min_pond_width_m") or config.get("min_width_m"),
                         pond_design_depth_m=config.get("pond_design_depth_m", 2.0),
                         top_n=config.get("max_candidate_sites", 5),
+                        max_footprint_m2=config.get("max_pond_footprint_m2"),
                     )
                     if siting_result.notes:
                         processing_notes.extend(siting_result.notes)
@@ -350,6 +469,7 @@ def analyze_contour_file(
                             min_width_m=config.get("min_pond_width_m") or config.get("min_width_m"),
                             pond_design_depth_m=config.get("pond_design_depth_m", 2.0),
                             top_n=config.get("max_candidate_sites", 5),
+                            max_footprint_m2=config.get("max_pond_footprint_m2"),
                         )
                         if siting_result.notes:
                             processing_notes.extend(siting_result.notes)
@@ -382,6 +502,8 @@ def analyze_contour_file(
                     rainfall=rainfall_summary,
                     contours_geojson=contours_geojson,
                     dem_mesh=dem_mesh,
+                    terrain_source=terrain_source,
+                    infrastructure=infrastructure_summary,
                     processing_notes=processing_notes,
                 )
 
@@ -577,6 +699,8 @@ def analyze_contour_file(
                 rainfall=rainfall_summary,
                 contours_geojson=contours_geojson,
                 dem_mesh=dem_mesh,
+                terrain_source=terrain_source,
+                infrastructure=infrastructure_summary,
                 processing_notes=processing_notes,
             )
 

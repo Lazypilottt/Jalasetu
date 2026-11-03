@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 
 export const PIPELINE_STAGES = [
-  { key: 'prepare', label: 'Parse contours & build DEM', short: 'Parse + DEM' },
-  { key: 'analyze', label: 'Terrain analysis & site ranking', short: 'Terrain + rank' },
-  { key: 'catchment', label: 'Catchment & runoff', short: 'Catchment' },
+  { key: 'prepare', label: 'Build terrain model (DEM)', short: 'Terrain DEM' },
+  { key: 'infrastructure', label: 'Check existing infrastructure', short: 'Infrastructure' },
+  { key: 'analyze', label: 'Terrain analysis & site ranking', short: 'Analyse + rank' },
   { key: 'climate', label: 'Rainfall climatology', short: 'Climate' },
+  { key: 'catchment', label: 'Catchment & runoff', short: 'Catchment' },
 ];
 
 function formatMs(ms) {
@@ -61,7 +62,7 @@ export default function PipelineProgress({ progress }) {
 
       {progress ? (
         <ol className="pipeline-steps">
-          {PIPELINE_STAGES.map((stage) => {
+          {PIPELINE_STAGES.filter((stage) => !progress.skipStages?.includes(stage.key)).map((stage) => {
             const done = completed.get(stage.key);
             const active = !done && progress.stage === stage.key;
             const state = done ? 'done' : active ? (progress.waiting_for_capacity ? 'waiting' : 'active') : 'pending';

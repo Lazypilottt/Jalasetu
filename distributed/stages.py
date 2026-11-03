@@ -77,6 +77,24 @@ def build_dem_stage(
             raise
 
 
+def global_dem_stage(latitude: float, longitude: float, params: Optional[Dict[str, Any]] = None):
+    """DEM from global elevation tiles around a point (no contour file covers it)."""
+    from app.services.terrain_source import fetch_global_dem
+
+    params = params or {}
+    t0 = time.perf_counter()
+    with tracer.start_as_current_span("build_dem") as span:
+        span.set_attribute("terrain_source", "global_dem")
+        dem = fetch_global_dem(
+            latitude,
+            longitude,
+            half_size_m=float(params.get("global_dem_half_size_m") or 1000.0),
+            resolution_m=params.get("dem_resolution_m"),
+        )
+        stage_duration.record(time.perf_counter() - t0, {"stage": "build_dem"})
+        return ParsedContoursPayload(features=[]), DEMPayload.from_dem_data(dem)
+
+
 def analyze_terrain_stage(
     dem: DEMPayload,
     params: Optional[Dict[str, Any]] = None,
@@ -117,8 +135,15 @@ def rank_pond_sites_stage(
     logger.info("Starting rank_pond_sites stage")
     with tracer.start_as_current_span("rank_pond_sites") as span:
         try:
+            analysis = terrain.to_result()
+            exclusion_stats = None
+            if params.get("exclusion_zones") or params.get("survey_area"):
+                from app.services.exclusions import apply_exclusions
+
+                exclusion_stats = apply_exclusions(analysis, params.get("exclusion_zones"), params.get("survey_area"))
+                span.set_attribute("infrastructure.masked_cells", exclusion_stats["zone_cells"])
             result = PondSiteService().identify_candidate_sites(
-                analysis_result=terrain.to_result(),
+                analysis_result=analysis,
                 min_suitability_threshold=params.get("suitability_threshold", 60.0),
                 min_area_m2=params.get("min_pond_area_m2", 200.0),
                 max_area_m2=params.get("max_pond_area_m2"),
@@ -127,11 +152,14 @@ def rank_pond_sites_stage(
                 min_width_m=params.get("min_pond_width_m") or params.get("min_width_m"),
                 pond_design_depth_m=params.get("pond_design_depth_m", 2.0),
                 top_n=params.get("max_candidate_sites", 5),
+                max_footprint_m2=params.get("max_pond_footprint_m2", 20000.0),
             )
             candidates = result.candidates
             if not candidates:
                 logger.warning("no suitable site")
             res = PondRankingPayload.from_result(result)
+            if exclusion_stats is not None:
+                res.exclusion_stats = exclusion_stats
             dur_s = time.perf_counter() - t0
             stage_duration.record(dur_s, {"stage": "rank_pond_sites"})
             logger.info("Completed rank_pond_sites stage in %.2f ms, candidate_count=%d", dur_s * 1000, len(candidates))

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import catchment
 from app.routers import locations
 from app.routers import rainfall
+from app.routers import infrastructure
 from app.models.schemas import HealthResponse
 from app.telemetry import init_telemetry
 
@@ -66,6 +67,7 @@ app.include_router(catchment.router, prefix="/catchment", tags=["Catchment Analy
 app.include_router(locations.router, tags=["Location Recommendations"])
 app.include_router(rainfall.router, prefix="/v1/rainfall", tags=["Rainfall & Climate Analytics"])
 app.include_router(rainfall.router, prefix="/api/rainfall", tags=["Rainfall & Climate Analytics"], include_in_schema=False)
+app.include_router(infrastructure.router, prefix="/v1/infrastructure", tags=["Existing Infrastructure"])
 
 
 # Initialize OpenTelemetry (traces, metrics, logs via OTLP gRPC)

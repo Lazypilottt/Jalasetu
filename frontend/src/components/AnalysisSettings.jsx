@@ -65,7 +65,7 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
             <h3 className="panel-title">Analysis settings</h3>
             <span className="settings-summary">
               {PRESETS.find((p) => p.id === preset)?.label || 'Custom'} · {settings.radiusM} m radius · CN {settings.curve_number}
-              {settings.design_rainfall_mm ? ` · ${settings.design_rainfall_mm} mm storm` : ''}
+              {settings.design_rainfall_mm ? ` · ${settings.design_rainfall_mm} mm storm` : ' · auto storm'}
             </span>
           </div>
         </div>
@@ -138,7 +138,7 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
               onChange={set('design_rainfall_mm')}
               min={1}
               max={1000}
-              hint="100 (default)"
+              hint="Auto · location storm"
               disabled={disabled}
             />
             <NumberField id="depth" label="Pond depth" unit="m" value={settings.pond_design_depth_m} onChange={set('pond_design_depth_m')} min={0.5} max={10} step={0.5} disabled={disabled} />
@@ -171,6 +171,7 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
                 <NumberField id="maxslope" label="Max slope" unit="°" value={settings.max_slope_deg} onChange={set('max_slope_deg')} min={0.5} max={45} step={0.5} disabled={disabled} />
                 <NumberField id="threshold" label="Min suitability" unit="/100" value={settings.suitability_threshold} onChange={set('suitability_threshold')} min={0} max={100} disabled={disabled} />
                 <NumberField id="minarea" label="Min footprint" unit="m²" value={settings.min_pond_area_m2} onChange={set('min_pond_area_m2')} min={10} max={100000} step={10} disabled={disabled} />
+                <NumberField id="maxfootprint" label="Max footprint" unit="m²" value={settings.max_pond_footprint_m2} onChange={set('max_pond_footprint_m2')} min={100} max={500000} step={500} disabled={disabled} />
               </div>
 
               <div className="settings-group-title">Suitability weights</div>

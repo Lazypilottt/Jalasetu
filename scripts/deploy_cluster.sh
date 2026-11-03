@@ -10,7 +10,8 @@
 # gateway, so the gateway is replaced last. Each node gets only what its role
 # needs (sys1 has no virtualenv at all). --prune removes the stale
 # backend_minimal tree, the .git directory, test output, dev-only packages and
-# the pip cache from the remote checkout. Uses the sys1-sys4 SSH aliases.
+# the pip cache from the remote checkout, plus repository docs and macOS
+# "._*" metadata files left by earlier copies. Uses the sys1-sys4 SSH aliases.
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -42,16 +43,21 @@ remote() {  # remote <node> <<'SCRIPT' ... ; scripts are fed over stdin
 }
 
 sync_paths() {  # sync_paths <node> <path>...
+  # tar over ssh: the nodes have no rsync. COPYFILE_DISABLE stops macOS tar
+  # from adding "._*" AppleDouble metadata files.
   local node=$1; shift
-  local args=(-az --relative --exclude __pycache__ --exclude '*.pyc' --exclude .DS_Store)
+  local args=(--exclude __pycache__ --exclude '*.pyc' --exclude .DS_Store --exclude '._*')
   if [ "$APPLY" -eq 1 ]; then
-    (cd "$ROOT" && rsync "${args[@]}" "$@" "$node:$REMOTE_DIR/")
+    (cd "$ROOT" && COPYFILE_DISABLE=1 tar -czf - "${args[@]}" "$@") \
+      | ssh -o BatchMode=yes "$node" "mkdir -p $REMOTE_DIR && tar -xzf - -C $REMOTE_DIR --no-same-owner"
   else
-    printf '    [dry-run] rsync %s -> %s:%s/\n' "$*" "$node" "$REMOTE_DIR"
+    printf '    [dry-run] tar %s | ssh %s tar -x -C %s/\n' "$*" "$node" "$REMOTE_DIR"
   fi
 }
 
-PRUNE_SCRIPT='rm -rf backend_minimal .git output tests .pytest_cache main.docx
+PRUNE_SCRIPT='rm -rf backend_minimal .git output tests .pytest_cache main.docx main.pdf
+find . -maxdepth 1 -type f \( -name "*.md" -o -name "*.docx" -o -name "*.pdf" \) -delete
+find . -path ./venv -prune -o -name "._*" -type f -print0 | xargs -0 rm -f
 if [ -x venv/bin/pip ]; then venv/bin/pip uninstall -y -q matplotlib pytest httpx fastkml lxml fastapi 2>/dev/null || true; fi
 python3 -m pip cache purge >/dev/null 2>&1 || true
 [ -x venv/bin/pip ] && venv/bin/pip cache purge >/dev/null 2>&1 || true'
@@ -95,13 +101,13 @@ EOF
 }
 
 deploy_edge() {
-  say "sys1: edge (frontend + rainfall, standard library only)"
+  say "sys1: edge (frontend, rainfall, infrastructure; standard library only)"
   if [ "$APPLY" -eq 1 ]; then
     (cd "$ROOT/frontend" && VITE_API_BASE_URL="" npm run build --silent)
   else
     echo '    [dry-run] (cd frontend && VITE_API_BASE_URL="" npm run build)'
   fi
-  sync_paths sys1 app/__init__.py app/services/__init__.py app/services/rainfall_service.py \
+  sync_paths sys1 app/__init__.py app/services/__init__.py app/services/rainfall_service.py app/services/infrastructure.py \
     distributed/__init__.py distributed/capacity.py distributed/sys1.py frontend/dist deploy/supervisor/sys1.conf
   [ "$PRUNE" -eq 1 ] && remote sys1 <<<"$PRUNE_SCRIPT"
   restart_service sys1
@@ -121,12 +127,15 @@ venv/bin/pip install -q --no-cache-dir -r requirements-runtime.txt
 EOF
   restart_service sys4
   wait_healthy sys4 http://127.0.0.1:8000/health
+  # The prober rewrites runtime/jalasetu_upstream_maps.conf every cycle, so
+  # restart it first: an old prober would drop maps the new config needs.
   remote sys4 <<'EOF'
+sudo -n supervisorctl restart cluster-health-prober
+for i in $(seq 1 30); do grep -q sys1_edge_target runtime/jalasetu_upstream_maps.conf && break; sleep 1; done
 sudo -n cp scripts/nginx_jalasetu_limits.conf /etc/nginx/conf.d/jalasetu_limits.conf
 sudo -n cp scripts/nginx_jalasetu_optimized.conf /etc/nginx/sites-enabled/jalasetu
 sudo -n nginx -t
 sudo -n nginx -s reload
-sudo -n supervisorctl restart cluster-health-prober
 curl -sf -m 10 http://127.0.0.1:3000/v1/cluster | head -c 400; echo
 EOF
   remote sys4 <<<"$FOOTPRINT_SCRIPT"

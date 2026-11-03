@@ -7,9 +7,36 @@ import {
   sitesToCsv,
 } from '../utils/exportResults';
 import { shareUrl } from '../utils/urlState';
+import { INFRASTRUCTURE_CATEGORIES } from '../utils/settings';
+
+const TERRAIN_LABELS = {
+  uploaded_contours: 'Uploaded contours',
+  bundled_contours: 'Demo contours',
+  global_dem: 'Global DEM · ~30 m',
+};
+const CATEGORY_LABELS = Object.fromEntries(INFRASTRUCTURE_CATEGORIES.map((c) => [c.id, c.label.toLowerCase()]));
+CATEGORY_LABELS.manual = 'marked zones';
+
+function InfrastructureSummaryLine({ infrastructure }) {
+  if (!infrastructure) return null;
+  if (infrastructure.status === 'unavailable') {
+    return <div className="run-summary-infra run-summary-infra-warning">Infrastructure could not be checked — verify on the ground.</div>;
+  }
+  const entries = Object.entries(infrastructure.counts || {});
+  if (entries.length === 0) {
+    return <div className="run-summary-infra">No mapped infrastructure in the surveyed {Math.round(infrastructure.survey_radius_m)} m.</div>;
+  }
+  return (
+    <div className="run-summary-infra">
+      Avoided {entries.map(([c, n]) => `${n} ${CATEGORY_LABELS[c] || c}`).join(', ')} ·{' '}
+      {(infrastructure.excluded_area_m2 / 10000).toFixed(2)} ha masked
+    </div>
+  );
+}
 
 function formatSeconds(ms) {
-  return typeof ms === 'number' ? `${(ms / 1000).toFixed(1)} s` : null;
+  if (typeof ms !== 'number') return null;
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
 /**
@@ -41,6 +68,16 @@ export default function ResultsToolbar({ result, selectedArea }) {
 
   return (
     <div className="results-toolbar" role="region" aria-label="Run summary and exports">
+      <div className="run-summary-badges">
+        {result.terrain_source && (
+          <span className={`source-badge source-${result.terrain_source}`}>{TERRAIN_LABELS[result.terrain_source] || result.terrain_source}</span>
+        )}
+        {result.rainfall?.recommended_design_rainfall_mm && (
+          <span className="source-badge source-rain">Storm {Math.round(result.catchment?.design_rainfall_mm ?? result.rainfall.recommended_design_rainfall_mm)} mm</span>
+        )}
+      </div>
+      <InfrastructureSummaryLine infrastructure={result.infrastructure} />
+
       {stages.length > 0 && (
         <div className="run-summary">
           <div className="run-summary-title">

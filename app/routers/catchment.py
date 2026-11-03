@@ -155,6 +155,24 @@ async def analyze_contour(
     selected_latitude: Optional[float] = Form(None, ge=-90.0, le=90.0),
     selected_longitude: Optional[float] = Form(None, ge=-180.0, le=180.0),
     selected_radius_m: Optional[float] = Form(None, ge=25.0, le=5000.0),
+    max_pond_footprint_m2: Optional[float] = Form(
+        20000.0, ge=100.0, le=500000.0, description="Oversized flat regions are carved to this footprint around their best cell."
+    ),
+    terrain_source: Optional[str] = Form(
+        "auto", description="'auto' (contours if they cover the point, else global DEM), 'contours', or 'global_dem'."
+    ),
+    avoid_infrastructure: Optional[bool] = Form(
+        True, description="Keep ponds off mapped rivers, tanks, buildings, schools, roads and wells (OpenStreetMap)."
+    ),
+    exclusion_categories: Optional[str] = Form(
+        None, description="Comma-separated categories to avoid: water, waterway, building, facility, road, railway, settlement, well."
+    ),
+    exclusion_buffer_scale: Optional[float] = Form(
+        1.0, ge=0.0, le=5.0, description="Multiplier on each infrastructure category's safety buffer."
+    ),
+    manual_exclusions: Optional[str] = Form(
+        None, description='JSON list of user-marked no-build zones: [{"lat": .., "lon": .., "radius_m": .., "label": ..}].'
+    ),
 ) -> CatchmentResponse:
     """
     Execute contour analysis pipeline on uploaded KML/KMZ file.
@@ -286,6 +304,13 @@ async def analyze_contour(
             "selected_latitude": selected_latitude,
             "selected_longitude": selected_longitude,
             "selected_radius_m": selected_radius_m,
+            "max_pond_footprint_m2": max_pond_footprint_m2,
+            "terrain_source": terrain_source,
+            "avoid_infrastructure": avoid_infrastructure,
+            "exclusion_categories": exclusion_categories,
+            "exclusion_buffer_scale": exclusion_buffer_scale,
+            "manual_exclusions": manual_exclusions,
+            "using_bundled_contours": using_default_contours,
         }
 
         # 5. Execute pipeline
@@ -297,11 +322,14 @@ async def analyze_contour(
                 file_source=temp_path,
                 params=params,
             )
-            if using_default_contours:
+            if using_default_contours and response.terrain_source == "bundled_contours":
                 response.processing_notes = [
                     "No contour upload was provided; the bundled demonstration contour dataset was used.",
                     *response.processing_notes,
                 ]
+        except ValueError as e:
+            # Input-level problems (no usable contours, global DEM unavailable).
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
         except Exception as e:
             logger.exception("Unhandled server exception during analyze_contour_file: %s", e)
             raise HTTPException(

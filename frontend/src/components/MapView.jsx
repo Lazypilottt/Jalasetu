@@ -1,8 +1,18 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, useMapEvents } from 'react-leaflet';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ResultsLayer, { computeCombinedResultsBounds, hasValidGeoJSONGeometry } from './ResultsLayer';
+import {
+  CursorTracker,
+  InfrastructureLayer,
+  LayerPanel,
+  MapActionButtons,
+  MapHud,
+  MapInstanceBridge,
+  PlaceSearch,
+  ScaleBar,
+} from './MapTools';
 
 // three.js is ~500 kB; load the 3D viewer only when it is first opened.
 const RaisedReliefModal = lazy(() => import('./RaisedReliefModal'));
@@ -315,14 +325,27 @@ function BaseLayerSync({ setSelectedBase }) {
   return null;
 }
 
-function AreaSelectionController({ radiusM, onSelect }) {
+function AreaSelectionController({ radiusM, onSelect, clickMode, onAddZone }) {
   useMapEvents({
     click(event) {
+      if (clickMode === 'zone') {
+        onAddZone?.({ lat: event.latlng.lat, lon: event.latlng.lng });
+        return;
+      }
       onSelect({ latitude: event.latlng.lat, longitude: event.latlng.lng, radiusM });
     },
   });
   return null;
 }
+
+const DEFAULT_LAYERS = Object.freeze({
+  contours: true,
+  catchment: true,
+  sites: true,
+  zones: true,
+  infrastructure: true,
+  manual: true,
+});
 
 /**
  * MapView Component
@@ -355,7 +378,7 @@ export default function MapView({
   zoom = null,
   defaultCenter = GENERIC_DEFAULT_CENTER,
   defaultZoom = GENERIC_DEFAULT_ZOOM,
-  placeholderMessage = 'Upload a contour map to see analysis results here.',
+  placeholderMessage = 'Click anywhere to pick a site. Where no contour map exists, JalaSetu builds the terrain from global elevation data.',
   showPlaceholder,
   showLegend = true,
   fitBoundsOptions = DEFAULT_FIT_BOUNDS_OPTIONS,
@@ -365,6 +388,16 @@ export default function MapView({
   selectedArea = null,
   onAreaSelect = () => {},
   selectionRadiusM = 250,
+  theme = 'light',
+  clickMode = 'select',
+  onAddZone = null,
+  manualZones = [],
+  infrastructureFeatures = null,
+  exclusionZones = null,
+  isAnalyzing = false,
+  onRecommendHere = null,
+  autoRecommend = false,
+  onToggleAutoRecommend = null,
 }) {
   // 1. Dynamically compute combined bounding box from response data or explicit bounds
   const effectiveBounds = useMemo(() => {
@@ -400,8 +433,34 @@ export default function MapView({
   const initialCenter = center || defaultCenter;
   const initialZoom = zoom !== null && zoom !== undefined ? zoom : defaultZoom;
 
-  // Persist user's selected base layer (default to Satellite)
-  const [selectedBase, setSelectedBase] = useState('Satellite');
+  // Base layer: Satellite by default, the dark basemap in dark mode, until the user picks one.
+  const [selectedBase, setSelectedBase] = useState(theme === 'dark' ? 'Dark' : 'Satellite');
+  const [userPickedBase, setUserPickedBase] = useState(false);
+  const [map, setMap] = useState(null);
+  const [cursor, setCursor] = useState(null);
+  const [layers, setLayers] = useState(DEFAULT_LAYERS);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const pickBase = useCallback((name) => {
+    setSelectedBase(name);
+    setUserPickedBase(true);
+  }, []);
+
+  useEffect(() => {
+    if (!userPickedBase) setSelectedBase(theme === 'dark' ? 'Dark' : 'Satellite');
+  }, [theme, userPickedBase]);
+
+  useEffect(() => {
+    if (!map) return undefined;
+    const timer = setTimeout(() => map.invalidateSize(), 220);
+    return () => clearTimeout(timer);
+  }, [map, isFullscreen]);
+
+  useEffect(() => {
+    if (!isFullscreen) return undefined;
+    const onKey = (event) => event.key === 'Escape' && setIsFullscreen(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
   const [isLegendOpen, setIsLegendOpen] = useState(true);
   const [isRaisedReliefActive, setIsRaisedReliefActive] = useState(false);
   const [is3DModalOpen, setIs3DModalOpen] = useState(false);
@@ -418,21 +477,21 @@ export default function MapView({
   const handleSelectMode = (mode) => {
     if (mode === 'relief') {
       setIsRaisedReliefActive(true);
-      setSelectedBase('Raised Relief');
+      pickBase('Raised Relief');
     } else {
       setIsRaisedReliefActive(false);
-      setSelectedBase('Satellite');
+      pickBase('Satellite');
     }
   };
 
   return (
-    <div className={`map-view-container ${className}`}>
-      {/* Map Header Overlay Badge & Mode Switcher */}
+    <div className={`map-view-container ${isFullscreen ? 'map-fullscreen' : ''} ${clickMode === 'zone' ? 'map-mode-zone' : ''} ${className}`}>
+      {/* Map Header: place search & Mode Switcher */}
       <div className="map-top-bar">
-        <div className="map-overlay-badge">
-          <span className="live-dot"></span>
-          <span>Interactive GIS Map</span>
-        </div>
+        <PlaceSearch
+          map={map}
+          onPick={(place) => onAreaSelect({ latitude: place.latitude, longitude: place.longitude, radiusM: selectionRadiusM })}
+        />
 
         {/* View Mode Switcher: Satellite vs Raised-Relief */}
         {hasAnalysisData && (
@@ -467,10 +526,28 @@ export default function MapView({
         )}
       </div>
 
-      <div className="map-selection-hint" role="status">
-        <span className="map-selection-hint-icon">⌖</span>
-        <span>{selectedArea ? 'Click the map to move the selected area' : `Click the map to select a ${selectionRadiusM} m area`}</span>
+      <div className="map-side-tools">
+        <MapActionButtons
+          map={map}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={() => setIsFullscreen((v) => !v)}
+          onLocate={(pos) => onAreaSelect({ ...pos, radiusM: selectionRadiusM })}
+        />
+        <LayerPanel layers={layers} onChange={setLayers} />
+        {typeof onToggleAutoRecommend === 'function' && (
+          <button
+            type="button"
+            className={`map-action-btn map-auto-btn ${autoRecommend ? 'active' : ''}`}
+            onClick={onToggleAutoRecommend}
+            aria-pressed={autoRecommend}
+            title="Recommend a site as soon as you click the map"
+          >
+            ⚡ <span className="layer-panel-label">Auto</span>
+          </button>
+        )}
       </div>
+
+      <MapHud cursor={cursor} map={map} selectionRadiusM={selectionRadiusM} clickMode={clickMode} />
 
       {hasAnalysisData && <MapResultSummary analysisData={analysisData} />}
 
@@ -502,12 +579,26 @@ export default function MapView({
         center={initialCenter}
         zoom={initialZoom}
         scrollWheelZoom={scrollWheelZoom}
+        zoomControl={false}
         className="leaflet-map"
       >
-        {/* Base layer control: Street, Satellite (default), Hybrid */}
-        <BaseLayerSync setSelectedBase={setSelectedBase} />
-        <AreaSelectionController radiusM={selectionRadiusM} onSelect={onAreaSelect} />
+        <MapInstanceBridge onReady={setMap} />
+        <ScaleBar />
+        <ZoomControl position="bottomright" />
+        <CursorTracker onMove={setCursor} />
+        {/* Base layer control: Dark, Satellite, Raised Relief, Topographic, Street, Hybrid */}
+        <BaseLayerSync setSelectedBase={pickBase} />
+        <AreaSelectionController radiusM={selectionRadiusM} onSelect={onAreaSelect} clickMode={clickMode} onAddZone={onAddZone} />
         <LayersControl position="bottomright">
+          <LayersControl.BaseLayer checked={selectedBase === 'Dark'} name="Dark">
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              subdomains="abcd"
+              maxZoom={20}
+            />
+          </LayersControl.BaseLayer>
+
           <LayersControl.BaseLayer checked={selectedBase === 'Satellite'} name="Satellite">
             <>
               <TileLayer
@@ -573,7 +664,14 @@ export default function MapView({
         {focusedSite && <MapFocusController focusedSite={focusedSite} />}
 
         {/* Built-in Results Layer for CatchmentResponse */}
-        {analysisData && <ResultsLayer data={analysisData} />}
+        {analysisData && <ResultsLayer data={analysisData} layers={layers} />}
+
+        <InfrastructureLayer
+          features={infrastructureFeatures}
+          zones={exclusionZones}
+          manualZones={manualZones}
+          show={layers}
+        />
 
         {selectedArea && (
           <>
@@ -581,21 +679,28 @@ export default function MapView({
               center={[selectedArea.latitude, selectedArea.longitude]}
               radius={selectedArea.radiusM || selectedArea.radius_m || selectionRadiusM}
               pathOptions={{
-                color: '#16a34a',
+                color: '#10b981',
                 weight: 2,
                 dashArray: '8 6',
-                fillColor: '#86efac',
-                fillOpacity: 0.16,
+                fillColor: '#34d399',
+                fillOpacity: 0.12,
+                className: isAnalyzing ? 'selection-ring scanning' : 'selection-ring',
               }}
-            >
-              <Popup>
-                <strong>Selected analysis area</strong>
-                <br />
-                Click Analyze to prioritize pond sites in this area.
-              </Popup>
-            </Circle>
+            />
             <Marker position={[selectedArea.latitude, selectedArea.longitude]}>
-              <Popup>Selected land centre</Popup>
+              <Popup>
+                <div className="popup-card popup-recommend">
+                  <strong>Selected point</strong>
+                  <span className="popup-coords">
+                    {selectedArea.latitude.toFixed(5)}, {selectedArea.longitude.toFixed(5)} · {selectionRadiusM} m radius
+                  </span>
+                  {typeof onRecommendHere === 'function' && (
+                    <button type="button" className="btn btn-primary btn-sm" onClick={onRecommendHere} disabled={isAnalyzing}>
+                      {isAnalyzing ? 'Analysing…' : 'Recommend a site here'}
+                    </button>
+                  )}
+                </div>
+              </Popup>
             </Marker>
           </>
         )}

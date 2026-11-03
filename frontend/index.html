@@ -4,7 +4,17 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Jalasetu — Pond Siting Assistant</title>
+    <meta name="theme-color" content="#f8fafc" />
+    <script>
+      // Apply the saved theme before first paint so dark mode never flashes white.
+      (function () {
+        var mode = 'system';
+        try { mode = localStorage.getItem('jalasetu.theme') || 'system'; } catch (e) {}
+        var dark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      })();
+    </script>
+    <title>JalaSetu — Pond Siting Console</title>
     <meta name="description" content="Automated terrain analysis and farm pond catchment delineation tool for rural water security and village watershed planning." />
     <!-- Leaflet CSS for Map View -->
     <link
@@ -15,7 +25,7 @@
     />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   </head>
   <body>
     <div id="root"></div>

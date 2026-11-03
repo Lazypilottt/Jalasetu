@@ -232,6 +232,27 @@ class PondSiteService:
 
         return storage_capacity_m3, cut_volume_m3, storage_efficiency_ratio, curve
 
+    @staticmethod
+    def _carve_region(labeled_array, region_id, r_indices, c_indices, suitability, dem_arr, max_cells, dx, dy):
+        """Keep the ``max_cells`` region cells nearest the region's best cell.
+
+        The best cell has the highest suitability (lowest elevation breaks ties).
+        Only the connected part containing it is kept; the rest of the region is
+        cleared from ``labeled_array`` so the vectorised footprint matches.
+        """
+        region_suit = suitability[r_indices, c_indices]
+        best = np.lexsort((dem_arr[r_indices, c_indices], -region_suit))[0]
+        seed_r, seed_c = r_indices[best], c_indices[best]
+        dist2 = ((r_indices - seed_r) * dy) ** 2 + ((c_indices - seed_c) * dx) ** 2
+        keep = np.argsort(dist2, kind="stable")[:max_cells]
+        kept = np.zeros(labeled_array.shape, dtype=bool)
+        kept[r_indices[keep], c_indices[keep]] = True
+        components, _ = ndi.label(kept, structure=np.ones((3, 3), dtype=int))
+        kept = components == components[seed_r, seed_c]
+        region = labeled_array == region_id
+        labeled_array[region & ~kept] = 0
+        return np.where(kept)
+
     @tracer.start_as_current_span("pond_site.identify_candidate_sites")
     def identify_candidate_sites(
         self,
@@ -244,6 +265,7 @@ class PondSiteService:
         min_width_m: Optional[float] = None,
         pond_design_depth_m: float = 2.0,
         top_n: Optional[int] = None,
+        max_footprint_m2: Optional[float] = None,
     ) -> PondSitingResult:
         """
         Identify and rank candidate pond sites from terrain suitability raster.
@@ -262,6 +284,9 @@ class PondSiteService:
             min_width_m (Optional[float]): Minimum allowable region width in meters across its minor axis
                 and inscribed circle. If None, derived adaptively from DEM grid resolution.
             top_n (Optional[int]): Maximum number of candidates to return (None for all).
+            max_footprint_m2 (Optional[float]): Regions larger than this (typical of flat plains)
+                are carved down to a compact footprint around their most suitable cell instead
+                of being reported as one implausibly large pond.
 
         Returns:
             PondSitingResult: Ranked candidates with real-world coordinates and metrics.
@@ -315,9 +340,19 @@ class PondSiteService:
         rejected_narrow = 0
         siting_notes: List[str] = []
 
+        carved_regions = 0
+        max_footprint_cells = (
+            int(max(1, max_footprint_m2 // cell_area_m2)) if max_footprint_m2 and max_footprint_m2 > 0 else None
+        )
+
         # 3. Analyze each connected region
         for region_id in range(1, num_features + 1):
             r_indices, c_indices = np.where(labeled_array == region_id)
+            if max_footprint_cells is not None and len(r_indices) > max_footprint_cells:
+                r_indices, c_indices = self._carve_region(
+                    labeled_array, region_id, r_indices, c_indices, suitability, dem_arr, max_footprint_cells, dx, dy
+                )
+                carved_regions += 1
             cell_count = len(r_indices)
             region_area_m2 = cell_count * cell_area_m2
 
@@ -391,6 +426,12 @@ class PondSiteService:
             weights = np.maximum(0.1, region_suitability - min_suitability_threshold + 1.0)
             center_row = float(np.average(r_indices, weights=weights))
             center_col = float(np.average(c_indices, weights=weights))
+            # A crescent, or a region wrapped around a masked no-build zone, can
+            # have its weighted centroid outside itself; report the nearest
+            # cell of the region instead so the pin is always on the footprint.
+            if labeled_array[int(round(center_row)), int(round(center_col))] != region_id:
+                nearest = int(np.argmin((r_indices - center_row) ** 2 + (c_indices - center_col) ** 2))
+                center_row, center_col = float(r_indices[nearest]), float(c_indices[nearest])
 
             # Transform raster coordinates to UTM meters (cell centers)
             utm_x, utm_y = rowcol_to_utm(dem_data.transform, center_row, center_col, offset="center")
@@ -483,6 +524,11 @@ class PondSiteService:
             siting_notes.append(
                 f"Filtered out {rejected_narrow} narrow candidate region(s) below minimum width threshold "
                 f"({effective_min_width_m:.1f}m)."
+            )
+        if carved_regions > 0:
+            siting_notes.append(
+                f"Carved {carved_regions} oversized flat region(s) down to a {max_footprint_m2:,.0f} m² footprint "
+                "around their most suitable cell."
             )
 
         # 4. Rank candidates by composite score: 70% mean suitability + 30% peak suitability (and tie-breaking by area)

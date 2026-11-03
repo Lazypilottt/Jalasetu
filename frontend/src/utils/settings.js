@@ -16,9 +16,37 @@ export const DEFAULT_SETTINGS = Object.freeze({
   min_pond_area_m2: 200,
   max_candidate_sites: 5,
   pond_design_depth_m: 2,
-  design_rainfall_mm: null, // null = backend default (100 mm)
+  design_rainfall_mm: null, // null = the location's recommended design storm
   curve_number: 75,
+  max_pond_footprint_m2: 20000, // oversized flat regions are carved to this (2 ha)
+  terrain_source: 'auto', // 'auto' | 'contours' | 'global_dem'
+  avoid_infrastructure: true,
+  exclusion_categories: null, // null = every category
+  exclusion_buffer_scale: 1,
 });
+
+/** Mirrors CATEGORIES in app/services/infrastructure.py (buffers in metres). */
+export const INFRASTRUCTURE_CATEGORIES = [
+  { id: 'water', label: 'Lakes, tanks & ponds', buffer: 15 },
+  { id: 'waterway', label: 'Rivers, streams & canals', buffer: 20 },
+  { id: 'building', label: 'Buildings', buffer: 10 },
+  { id: 'facility', label: 'Schools, hospitals & temples', buffer: 30 },
+  { id: 'road', label: 'Roads', buffer: 8 },
+  { id: 'railway', label: 'Railways', buffer: 15 },
+  { id: 'settlement', label: 'Residential areas', buffer: 0 },
+  { id: 'well', label: 'Wells & water points', buffer: 15 },
+];
+const ALL_CATEGORY_IDS = INFRASTRUCTURE_CATEGORIES.map((c) => c.id);
+
+export function enabledCategories(settings) {
+  return settings.exclusion_categories || ALL_CATEGORY_IDS;
+}
+
+export const TERRAIN_SOURCES = [
+  { id: 'auto', label: 'Auto', hint: 'Contours where available, global DEM elsewhere' },
+  { id: 'contours', label: 'Contours', hint: 'Uploaded or bundled contour map only' },
+  { id: 'global_dem', label: 'Global DEM', hint: 'SRTM-derived ~30 m terrain anywhere' },
+];
 
 export const PRESETS = [
   { id: 'quick', label: 'Quick', hint: '20 m DEM, 3 sites', values: { dem_resolution_m: 20, max_candidate_sites: 3 } },
@@ -37,18 +65,25 @@ export const LAND_COVER_CN = [
 
 export const RADIUS_LIMITS = { min: 50, max: 1000, step: 10 };
 
+// Parameters a preset controls; hydrology, terrain source and infrastructure
+// choices are left as the user set them.
+const PRESET_KEYS = [
+  'dem_resolution_m', 'ideal_slope_deg', 'max_slope_deg', 'weight_slope', 'weight_depression',
+  'weight_twi', 'suitability_threshold', 'min_pond_area_m2', 'max_candidate_sites',
+];
 const PARAM_KEYS = Object.keys(DEFAULT_SETTINGS).filter((key) => key !== 'radiusM');
 
 export function presetSettings(presetId, current = DEFAULT_SETTINGS) {
   const preset = PRESETS.find((p) => p.id === presetId);
-  const reset = { ...DEFAULT_SETTINGS, radiusM: current.radiusM, design_rainfall_mm: current.design_rainfall_mm, curve_number: current.curve_number };
+  const reset = { ...current };
+  PRESET_KEYS.forEach((key) => { reset[key] = DEFAULT_SETTINGS[key]; });
   return { ...reset, ...(preset?.values || {}) };
 }
 
 export function activePreset(settings) {
   return PRESETS.find((preset) => {
     const expected = presetSettings(preset.id, settings);
-    return PARAM_KEYS.every((key) => expected[key] === settings[key]);
+    return PRESET_KEYS.every((key) => expected[key] === settings[key]);
   })?.id || null;
 }
 
@@ -56,9 +91,12 @@ export function settingsToParams(settings) {
   const params = {};
   PARAM_KEYS.forEach((key) => {
     const value = settings[key];
-    if (value !== null && value !== undefined && value !== '' && value !== DEFAULT_SETTINGS[key]) {
-      params[key] = value;
+    if (value === null || value === undefined || value === '' || value === DEFAULT_SETTINGS[key]) return;
+    if (key === 'exclusion_categories') {
+      if (value.length !== ALL_CATEGORY_IDS.length) params[key] = value.join(',') || 'none';
+      return;
     }
+    params[key] = typeof value === 'boolean' ? String(value) : value;
   });
   return params;
 }
@@ -70,6 +108,7 @@ export function validateSettings(s) {
   if (s.curve_number < 30 || s.curve_number > 98) errors.push('Curve number must be between 30 and 98.');
   if (s.max_candidate_sites < 1 || s.max_candidate_sites > 20) errors.push('Candidate sites must be between 1 and 20.');
   if (s.design_rainfall_mm !== null && !(s.design_rainfall_mm > 0)) errors.push('Design rainfall must be positive.');
+  if (!(s.max_pond_footprint_m2 >= 100)) errors.push('Maximum pond footprint must be at least 100 m².');
   return errors;
 }
 
@@ -92,7 +131,13 @@ export function loadSettings() {
     if (stored && typeof stored === 'object') {
       const merged = { ...DEFAULT_SETTINGS };
       Object.keys(DEFAULT_SETTINGS).forEach((key) => {
-        if (key in stored && (typeof stored[key] === 'number' || stored[key] === null)) merged[key] = stored[key];
+        if (!(key in stored)) return;
+        const fallback = DEFAULT_SETTINGS[key];
+        const value = stored[key];
+        const sameType = fallback === null
+          ? value === null || typeof value === 'number' || Array.isArray(value)
+          : value === null || typeof value === typeof fallback;
+        if (sameType) merged[key] = value;
       });
       return merged;
     }
@@ -108,4 +153,31 @@ export function saveSettings(settings) {
   } catch {
     // Settings persistence is a convenience only.
   }
+}
+
+// Extent of the bundled demonstration contours (contours_1m.kml); mirrors
+// BUNDLED_CONTOUR_BOUNDS in app/services/terrain_source.py.
+const BUNDLED_BOUNDS = { minLon: 81.2814, minLat: 21.23982, maxLon: 81.31265, maxLat: 21.26358 };
+
+export function inBundledContours(point) {
+  return Boolean(point) &&
+    point.longitude >= BUNDLED_BOUNDS.minLon && point.longitude <= BUNDLED_BOUNDS.maxLon &&
+    point.latitude >= BUNDLED_BOUNDS.minLat && point.latitude <= BUNDLED_BOUNDS.maxLat;
+}
+
+/** Which terrain source the backend will use for this request (display only). */
+export function terrainPlanFor(settings, uploadedFile, point) {
+  if (settings.terrain_source === 'global_dem' && point) {
+    return { id: 'global', label: 'Global DEM (SRTM-derived ~30 m)', hint: 'Forced by the terrain source setting.' };
+  }
+  if (uploadedFile) {
+    return { id: 'upload', label: `Uploaded contours · ${uploadedFile.name}`, hint: 'Highest accuracy: your surveyed contour map.' };
+  }
+  if (!point) return null;
+  if (settings.terrain_source === 'contours' || inBundledContours(point)) {
+    return inBundledContours(point)
+      ? { id: 'demo', label: 'Demo contour map (1 m)', hint: 'This point is inside the bundled contour survey.' }
+      : { id: 'none', label: 'No contour map here', hint: 'Upload contours, or switch the source to Auto or Global DEM.' };
+  }
+  return { id: 'global', label: 'Global DEM (SRTM-derived ~30 m)', hint: 'No contour map covers this point; elevation tiles are used instead.' };
 }

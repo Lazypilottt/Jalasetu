@@ -3,8 +3,9 @@
 sys1 also hosts the OpenTelemetry backends, which use about half of its 500 MB,
 and it has no virtualenv. This service therefore uses only the standard library
 (about 35 MB resident). It takes the backend work that needs no geospatial
-stack: the rainfall/climate API, which the gateway also calls for every
-analysis, and serving the built SPA. Its ``/health`` reports memory and storage
+stack: the rainfall/climate API and the existing-infrastructure lookup
+(OpenStreetMap), both of which the gateway calls for every analysis, and
+serving the built SPA. Its ``/health`` reports memory and storage
 use in the same shape as the stage workers, so the cluster view covers all four
 nodes. It advertises no heavy stages, so the scheduler never places any here.
 
@@ -14,6 +15,7 @@ Run with ``python3 -m distributed.sys1``.
 from __future__ import annotations
 
 import http.server
+import ipaddress
 import json
 import logging
 import os
@@ -24,6 +26,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from app.services.infrastructure import fetch_infrastructure
 from app.services.rainfall_service import RainfallService
 
 from .capacity import CapacityGuard, StorageMonitor
@@ -42,7 +45,19 @@ NODE_NAME = os.getenv("JALASETU_NODE_NAME", "sys1")
 # never bounce between Nginx and sys1.
 GATEWAY_PREFIXES = ("/analyzeContour", "/findCatchment", "/v1/jobs", "/v1/cluster", "/IP/search")
 RAINFALL_PATHS = ("/v1/rainfall", "/api/rainfall")
+INFRASTRUCTURE_PATH = "/v1/infrastructure"
 HOP_HEADER = "X-JalaSetu-Edge"
+
+# The public entry point is the sys4 Nginx (load balancing, rate limits). The
+# host also publishes sys1's port, which would otherwise serve a second copy of
+# the site that bypasses Nginx; clients outside the trusted networks are sent
+# to the public URL instead. Unset JALASETU_PUBLIC_URL to serve everyone.
+PUBLIC_URL = os.getenv("JALASETU_PUBLIC_URL", "").rstrip("/")
+TRUSTED_NETWORKS = tuple(
+    ipaddress.ip_network(item.strip(), strict=False)
+    for item in os.getenv("JALASETU_TRUSTED_NETWORKS", "127.0.0.0/8,::1/128").split(",")
+    if item.strip()
+)
 MAX_PROXY_BODY = 50 * 1024 * 1024
 
 guard = CapacityGuard()
@@ -54,6 +69,16 @@ def _matches(path: str, prefixes) -> bool:
     return any(path == p or path.startswith(p + "/") for p in prefixes)
 
 
+def is_trusted(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return any(ip in network for network in TRUSTED_NETWORKS)
+
+
 def health_body() -> Dict[str, Any]:
     capacity = guard.report()
     capacity["accepting"] = False  # no heavy stages on the edge node
@@ -63,11 +88,23 @@ def health_body() -> Dict[str, Any]:
         "role": "edge",
         "stages": [],
         "affinity": [],
-        "serves": ["frontend", "rainfall"],
+        "serves": ["frontend", "rainfall", "infrastructure"],
         "frontend_built": (DIST_DIR / "index.html").exists(),
         "capacity": capacity,
         "storage": storage.report(),
     }
+
+
+def infrastructure_body(query: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+    try:
+        lat = float((query.get("lat") or [None])[0])
+        lon = float((query.get("lon") or [None])[0])
+        radius = float((query.get("radius_m") or ["400"])[0])
+    except (TypeError, ValueError):
+        return 422, {"error": "lat, lon (and optional radius_m) must be numbers"}
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180 and 50 <= radius <= 3000):
+        return 422, {"error": "lat/lon out of range or radius_m outside 50-3000"}
+    return 200, fetch_infrastructure(lat, lon, radius)
 
 
 def rainfall_body(query: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
@@ -105,8 +142,22 @@ class EdgeHandler(http.server.SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _redirect_external(self) -> bool:
+        """Send direct outside visitors to the public entry point."""
+        if not PUBLIC_URL or is_trusted(self.client_address[0]):
+            return False
+        target = PUBLIC_URL + (self.path if self.path.startswith("/") else "/" + self.path)
+        self.send_response(308)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return True
+
     def _route(self) -> bool:
         """Handle API paths. Returns False when the path is a static file."""
+        if self._redirect_external():
+            return True
         parsed = urllib.parse.urlsplit(self.path)
         if parsed.path == "/health":
             self._send_json(200, health_body())
@@ -116,6 +167,10 @@ class EdgeHandler(http.server.SimpleHTTPRequestHandler):
             if self.command == "POST":
                 query.update(self._read_form_or_json())
             status, body = rainfall_body(query)
+            self._send_json(status, body)
+            return True
+        if parsed.path == INFRASTRUCTURE_PATH:
+            status, body = infrastructure_body(urllib.parse.parse_qs(parsed.query))
             self._send_json(status, body)
             return True
         if _matches(parsed.path, GATEWAY_PREFIXES):

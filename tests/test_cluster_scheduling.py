@@ -238,9 +238,14 @@ def test_worker_answers_503_when_guard_refuses(monkeypatch):
     assert response.headers["Retry-After"] == "2"
 
 
-def test_gateway_job_runs_all_stages_and_honours_selected_area():
+NO_INFRASTRUCTURE = {"status": "ok", "source": "test", "message": "none", "features": {"type": "FeatureCollection", "features": []}}
+
+
+def test_gateway_job_runs_all_stages_and_honours_selected_area(monkeypatch):
+    import distributed.sys4 as sys4
     from distributed.sys4 import create_app
 
+    monkeypatch.setattr(sys4, "fetch_infrastructure", lambda *args, **kwargs: NO_INFRASTRUCTURE)
     app = create_app(ServiceConfig(node_name="gw"))
     client = app.test_client()
     submitted = client.post(
@@ -255,8 +260,11 @@ def test_gateway_job_runs_all_stages_and_honours_selected_area():
     assert body["state"] == "succeeded", body.get("error")
     result = body["result"]
     assert result["selected_area"]["radius_m"] == 250
-    assert [s["stage"] for s in result["execution"]["stages"]][:3] == ["prepare", "analyze", "catchment"]
-    assert {s["node"] for s in result["execution"]["stages"][:3]} == {"gw"}
+    stages = result["execution"]["stages"]
+    assert [s["stage"] for s in stages] == ["prepare", "infrastructure", "analyze", "climate", "catchment"]
+    assert {s["node"] for s in stages} == {"gw"}
+    assert result["terrain_source"] == "bundled_contours"
+    assert result["infrastructure"]["status"] == "ok"
     assert "bundled contours_1m.kml" in result["processing_notes"][0]
     cluster = client.get("/v1/cluster").get_json()
     assert cluster["budgets"]["memory_mb"] <= 500
@@ -321,3 +329,40 @@ def test_edge_refuses_to_proxy_a_looped_request(edge_server):
     assert status == 508
     status, _, _ = fetch(edge_server + "/v1/cluster")
     assert status == 502  # gateway at port 9 is down
+
+
+def test_edge_redirects_direct_outside_clients_to_public_entry(edge_server, monkeypatch):
+    import http.client
+    import ipaddress
+
+    from distributed import sys1
+
+    monkeypatch.setattr(sys1, "PUBLIC_URL", "http://10.1.75.51:3204")
+    # Treat the test client (127.0.0.1) as an outside visitor.
+    monkeypatch.setattr(sys1, "TRUSTED_NETWORKS", (ipaddress.ip_network("172.17.0.5/32"),))
+    host, port = edge_server.split("//")[1].split(":")
+    for method, path in (("GET", "/"), ("GET", "/assets/app.js?v=1"), ("POST", "/v1/jobs")):
+        conn = http.client.HTTPConnection(host, int(port), timeout=5)
+        conn.request(method, path)
+        response = conn.getresponse()
+        assert response.status == 308
+        assert response.getheader("Location") == f"http://10.1.75.51:3204{path}"
+        conn.close()
+
+    monkeypatch.setattr(sys1, "TRUSTED_NETWORKS", (ipaddress.ip_network("127.0.0.0/8"),))
+    assert fetch(edge_server + "/")[0] == 200
+
+
+def test_page_cache_does_not_count_as_used_memory(tmp_path, monkeypatch):
+    stat = "\n".join([
+        "anon 144703488", "file 227540992", "active_file 110100480", "inactive_file 117440512",
+        "shmem 0", "slab_unreclaimable 1048576", "kernel_stack 524288", "sock 0",
+    ])
+    (tmp_path / "memory.current").write_text("483393536")
+    (tmp_path / "memory.stat").write_text(stat)
+    (tmp_path / "memory.max").write_text("536870912")
+    monkeypatch.setattr(capacity_module, "_CGROUP_V2", tmp_path)
+    sample = capacity_module.read_memory()
+    assert sample["source"] == "cgroup-v2"
+    assert round(sample["working_set"] / capacity_module.MB) == 140  # anon + slab + stack, not the cache
+    assert CapacityGuard(memory_budget_mb=500, stage_reserve_mb=150).try_acquire() is True

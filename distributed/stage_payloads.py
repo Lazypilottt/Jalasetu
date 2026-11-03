@@ -236,6 +236,7 @@ class PondRankingPayload:
     rejected_elongated_count: int = 0
     rejected_narrow_count: int = 0
     notes: List[str] = field(default_factory=list)
+    exclusion_stats: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_result(cls, result: PondSitingResult) -> "PondRankingPayload":

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getRainfallData } from '../api/catchmentApi';
 
 /**
@@ -15,6 +15,7 @@ export default function RainfallPanel({
   onApplyDesignRainfall = null,
   defaultLat = 21.26,
   defaultLon = 81.28,
+  followPoint = null,
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [customLat, setCustomLat] = useState(defaultLat);
@@ -24,6 +25,34 @@ export default function RainfallPanel({
   const [fetchError, setFetchError] = useState(null);
 
   const activeData = liveRainfall || rainfall;
+  const followKey = followPoint ? `${followPoint.latitude.toFixed(3)},${followPoint.longitude.toFixed(3)}` : null;
+  const lastFollowed = useRef(null);
+
+  // Rainfall follows the selected map point, so the regime and design storm
+  // are visible before an analysis runs.
+  useEffect(() => {
+    if (!followKey || followKey === lastFollowed.current) return undefined;
+    const timer = setTimeout(async () => {
+      lastFollowed.current = followKey;
+      setCustomLat(Number(followPoint.latitude.toFixed(4)));
+      setCustomLon(Number(followPoint.longitude.toFixed(4)));
+      setIsFetching(true);
+      setFetchError(null);
+      try {
+        setLiveRainfall(await getRainfallData(followPoint.latitude, followPoint.longitude));
+      } catch (err) {
+        setFetchError(err.message || 'Failed to fetch rainfall for the selected point');
+      } finally {
+        setIsFetching(false);
+      }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [followKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A fresh analysis result supersedes the live lookup.
+  useEffect(() => {
+    if (rainfall) setLiveRainfall(null);
+  }, [rainfall]);
 
   const handleFetchCustom = async (e) => {
     e?.preventDefault();

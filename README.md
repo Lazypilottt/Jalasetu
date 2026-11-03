@@ -3,10 +3,13 @@
 ## Farm-Pond Siting and Catchment Analysis
 
 JalaSetu is a geospatial decision-support application for identifying suitable
-farm-pond locations from topographic contour data. It combines a FastAPI
-backend, a React/Leaflet web interface, and a terrain-analysis pipeline that
-constructs a digital elevation model (DEM), ranks candidate pond sites,
-delineates the upstream catchment, and estimates collectible stormwater.
+farm-pond locations. Click any point on the map, with or without a contour
+file, and it builds a digital elevation model (DEM), ranks candidate pond
+sites while keeping clear of existing rivers, tanks, buildings, schools and
+roads, delineates the upstream catchment, and estimates collectible stormwater
+from the location's own rainfall regime. It combines a FastAPI/Flask backend
+(single node or a four-node cluster), a React/Leaflet web interface, and a
+terrain-analysis pipeline.
 
 The application is designed for watershed planning, village-scale water
 conservation, and rapid preliminary site screening. It provides a technical
@@ -20,6 +23,7 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
 
 ## Contents
 
+- [Problems solved](#problems-solved)
 - [Features](#features)
 - [System architecture](#system-architecture)
 - [Quick start](#quick-start)
@@ -38,12 +42,54 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
 
 ---
 
+## Problems solved
+
+### For the people siting ponds
+
+| Problem | How JalaSetu solves it |
+|---|---|
+| **Where should a farm pond go?** Picking a site by eye risks dry ponds on ridges or ponds that never fill. | Terrain analysis ranks natural depressions by slope, depression depth and topographic wetness, then checks that the upstream catchment can actually fill the pond with the local design storm. |
+| **No survey data for most villages.** Contour maps exist for very few places. | Click anywhere: when no contour map covers the point, the DEM is built from global SRTM-derived elevation tiles, so every village can get a first screening. Upload a surveyed `.kml`/`.kmz` for engineering-grade terrain. |
+| **Recommendations landed on existing infrastructure.** A terrain-only model happily puts a "pond" on a river, an existing tank, houses, a school or a road. | Existing infrastructure is fetched from OpenStreetMap, buffered by category (e.g. 30 m around schools and hospitals, 20 m around streams, 10 m around buildings), and masked out before ranking. Wells and anything unmapped can be marked by hand. Every recommendation reports what was avoided. |
+| **Generic rainfall gave wrong runoff.** A fixed 100 mm storm over- or under-estimates collectible water. | The location's rainfall regime (Open-Meteo ERA5) is fetched for the selected point, shown before analysis, and its recommended 24 h design storm feeds the SCS-CN runoff estimate unless the user overrides it. |
+| **Flat plains produced 100-hectare "ponds".** In the Chhattisgarh plains a whole flat field is one suitable region. | Oversized regions are carved to a realistic footprint (2 ha by default, configurable) around their most suitable cell, and the reported pin is always on the pond footprint. |
+| **Results were hard to use in the field.** | Results export to GeoJSON (QGIS, Google Earth), CSV and JSON; a link reopens the same point; recent analyses are kept in the browser. |
+
+### Engineering problems fixed
+
+| Problem | Fix |
+|---|---|
+| Four 500 MB nodes ran out of memory under concurrent analyses, and sys1 did no backend work. | A capacity-aware scheduler places each stage on the node with free memory headroom (measured from the cgroup); busy nodes answer 503 and are skipped. sys1 now serves the rainfall and infrastructure lookups. |
+| Nodes exceeded the 1.5 GB storage budget (2.2 GB on sys2). | A runtime-only dependency set, a pruning deploy script, and a per-node storage report against the budget. |
+| `/v1/rainfall` returned the SPA's HTML in production, so the rainfall panel never worked. | Explicit Nginx routes for every API path, and an edge service that never bounces requests back. |
+| The distributed gateway ignored the selected map area. | Candidates are re-ranked around the selected point before catchment delineation, matching the single-node pipeline. |
+| A request with no file and no area silently analysed demo data. | It is rejected with a clear 422. |
+| The test suite depended on live third-party APIs. | External lookups are stubbed by default; the suite runs offline in under 30 s. |
+
+---
+
 ## Features
 
 ### Interactive frontend
 
+- **Click anywhere to get a recommendation**: pick a point on the map, search
+  a village or coordinates, or use your location. Optional one-click
+  *auto-recommend* and a *Recommend a site here* button on the map marker.
+- **Infrastructure-aware siting**: preview mapped rivers, tanks, buildings,
+  schools, roads, railways, residential areas and wells around the point;
+  choose which categories to avoid and scale the safety buffers; mark your own
+  no-build zones on the map. No-build zones are drawn on the map with the
+  result.
+- **Advanced map**: place search, cursor-coordinate HUD, scale bar, locate-me,
+  full-screen mode, per-layer toggles (contours, catchment, pond sites,
+  no-build zones, mapped infrastructure, marked zones), and Dark, Satellite,
+  Raised Relief, Topographic, Street and Hybrid base maps.
+- **Dark mode**: System / Light / Dark theme toggle, remembered per browser,
+  with a dark basemap and dark map controls.
+- **Rainfall at the selected point** before analysis, with the location's
+  design storm used for runoff by default.
 - Upload `.kml` and `.kmz` contour files by browsing or drag-and-drop.
-- Select a 250 m radius analysis area directly on the map.
+- Select a 50–1000 m radius analysis area directly on the map.
 - Analyze the selected area with an uploaded contour file or, for
   demonstration purposes, the bundled [`contours_1m.kml`](./contours_1m.kml)
   dataset.
@@ -66,6 +112,13 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
 
 ### Terrain and hydrology pipeline
 
+- Terrain from uploaded contours, the bundled demo contours, or a global
+  SRTM-derived DEM (Terrarium terrain tiles) when no contour map covers the
+  selected point.
+- Existing-infrastructure exclusion from OpenStreetMap (Overpass API) plus
+  user-marked zones, applied as a no-build mask before ranking; candidates are
+  limited to the surveyed radius.
+- Footprint carving for oversized flat regions.
 - Multi-strategy KML/KMZ elevation extraction.
 - Local UTM reprojection for metric calculations.
 - Adaptive DEM interpolation using SciPy.
@@ -178,17 +231,19 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 ### 3. Run the first analysis
 
-Choose either workflow:
+Choose any workflow:
 
-1. Upload `contours_1m.kml`, select an area on the map, and click
-   **Analyze selected area**.
-2. Select an area on the map and click **Analyze selected area (demo contours)**
-   without uploading a file. This uses the bundled dataset and clearly labels
-   the result as demonstration-data analysis.
+1. Click anywhere on the map (or search a village) and click **Recommend a
+   site here**. Outside the bundled demo extent the terrain comes from the
+   global elevation source.
+2. Upload a `.kml`/`.kmz` contour map, select a point inside it, and click
+   **Recommend a site in this area**.
+3. Select a point inside the bundled dataset (longitude `81.2814`–`81.3126`,
+   latitude `21.2398`–`21.2636`) to use the 1 m demo contours.
 
-The bundled dataset covers approximately longitude `81.2814`–`81.3126` and
-latitude `21.2398`–`21.2636`. A selection outside that extent may produce a
-nearest-site fallback or no suitable site.
+The global elevation source and the infrastructure lookup need internet
+access from the backend. If OpenStreetMap does not respond, the analysis still
+runs and says that infrastructure could not be checked.
 
 ---
 
@@ -279,6 +334,30 @@ Interactive API documentation is available at:
 | `POST` | `/analyzeContour` | Runs contour, terrain, pond, catchment, and runoff analysis. |
 | `POST` | `/catchment/analyzeContour` | Compatibility route for the same analysis endpoint. |
 | `GET` / `POST` | `/IP/search/` | **Location Recommendation API** — finds 10 closest locations by grid distance. |
+| `GET` | `/v1/infrastructure?lat=&lon=&radius_m=` | Mapped infrastructure around a point (OpenStreetMap), classified into avoidance categories. Never errors on upstream failure: returns `status: "unavailable"`. |
+| `GET` | `/v1/rainfall?lat=&lon=` | Rainfall regime and recommended design storm for a point. |
+
+#### Siting and terrain parameters (form fields)
+
+| Field | Default | Description |
+|---|---:|---|
+| `terrain_source` | `auto` | `auto` (contours where available, global DEM elsewhere), `contours`, or `global_dem`. |
+| `avoid_infrastructure` | `true` | Keep candidates off mapped infrastructure. Requires a selected area. |
+| `exclusion_categories` | all | Comma-separated subset of `water, waterway, building, facility, road, railway, settlement, well`. |
+| `exclusion_buffer_scale` | `1.0` | Multiplier on each category's safety buffer (0–5). |
+| `manual_exclusions` | — | JSON list of user-marked zones, e.g. `[{"lat": 21.19, "lon": 81.48, "radius_m": 30}]`. |
+| `max_pond_footprint_m2` | `20000` | Oversized flat regions are carved to this footprint around their best cell. |
+
+Responses add `terrain_source` and `infrastructure` (status, counts per
+category, masked area, buffered `zones_geojson`, and the fetched
+`features_geojson`).
+
+```bash
+# Recommend a site anywhere, avoiding infrastructure and a marked well
+curl -X POST "http://127.0.0.1:8000/analyzeContour" \
+  -F "selected_latitude=21.1950" -F "selected_longitude=81.4820" -F "selected_radius_m=300" \
+  -F 'manual_exclusions=[{"lat": 21.1951, "lon": 81.4852, "radius_m": 40}]'
+```
 
 ### `POST /analyzeContour`
 
@@ -625,81 +704,69 @@ updates the target checkout and requires administrative privileges.
 
 ### Verified four-node deployment
 
-> This section records the deployment currently running on the cluster, which
-> predates the capacity-aware scheduler. Roll the Beta out with
-> `scripts/deploy_cluster.sh` (dry run by default); see
-> [`distributed/README.md`](./distributed/README.md).
-
-The distributed deployment has been deployed and verified end-to-end across
-four cluster nodes. The public application entry point is:
+The distributed build is deployed on four cluster nodes (500 MB RAM each)
+with `scripts/deploy_cluster.sh --apply`. The single public entry point is:
 
 **<http://10.1.75.51:3204/>**
 
-This address is the single public entry point exposed by the Nginx reverse
-proxy on `sys4`.
+This is the Nginx reverse proxy on `sys4`. The host also publishes `sys1`'s
+own port as `:3201`; that used to serve a second copy of the site that
+bypassed Nginx's routing and rate limits. The `sys1` edge now serves only the
+cluster nodes and answers any other client with a `308` redirect to `:3204`,
+so `http://10.1.75.51:3201/` lands on the same, load-balanced entry point.
 
 #### Cluster topology
 
 | Node | Internal address | Role | Service port |
 |---|---|---|---:|
-| `sys1` | `172.17.0.2` | React/Vite static frontend served by the lightweight SPA server | `3000` |
-| `sys2` | `172.17.0.3` | KML/KMZ parsing and DEM generation | `3000` |
-| `sys3` | `172.17.0.4` | Terrain derivatives and pond-site ranking | `3000` |
-| `sys4` | `172.17.0.5` | Gateway, catchment delineation, runoff response, and Nginx entry point | `3000`, `3204` |
+| `sys1` | `172.17.0.2` | Edge: built SPA, rainfall API, OpenStreetMap infrastructure lookup (standard library only, ~22 MB) | `3000` |
+| `sys2` | `172.17.0.3` | Stage worker (any stage; ties go to terrain/DEM build and catchment) | `3000` |
+| `sys3` | `172.17.0.4` | Stage worker (any stage; ties go to terrain analysis and ranking) | `3000` |
+| `sys4` | `172.17.0.5` | Gateway (job queue, capacity-aware scheduler, stage fallback) behind Nginx | `3000`, `3204` |
 
-Administrative SSH access was verified through the host's mapped ports
-`2201`–`2204`, corresponding to `sys1`–`sys4`. The deployment was started
-from a clean process state; previous Python, Node, Vite, Uvicorn, Flask, and
-SPA-server processes were stopped before verification.
+Each worker admits a stage only with a free slot and at least 150 MB of
+headroom under its 500 MB budget, counting only memory the kernel cannot
+reclaim. A busy node answers `503` and the gateway places the stage on the
+next node. `GET /v1/cluster` shows live per-node memory, storage, and load.
 
 #### Request routing
 
-Nginx on `sys4` routes requests as follows:
-
 | Request path | Upstream | Purpose |
 |---|---|---|
-| `/` and static assets | `172.17.0.2:3000` | Serve the frontend application |
-| `/v1/parse`, `/v1/dem`, `/v1/prepare` | `172.17.0.3:3000` | Forward parsing and DEM stages to `sys2` |
-| `/v1/terrain`, `/v1/rank` | `172.17.0.4:3000` | Forward terrain and ranking stages to `sys3` |
-| `/analyzeContour`, `/findCatchment`, `/health` | `127.0.0.1:8000` | Handle gateway analysis and operational endpoints on `sys4` |
+| `/` and static assets | `sys1` edge | Frontend application |
+| `/v1/rainfall`, `/v1/infrastructure` | `sys1` edge (`sys4` if `sys1` is down) | Climate and infrastructure lookups |
+| `/v1/jobs`, `/v1/cluster`, `/analyzeContour`, `/findCatchment` | `sys4` gateway | Queued analysis, cluster view, synchronous analysis |
+| `/v1/prepare`, `/v1/analyze`, `/v1/catchment` (internal) | chosen per stage by the gateway | Heavy stages on `sys2`/`sys3`/`sys4` |
 
-The frontend was built with `VITE_API_BASE_URL=""`, so browser requests use
-same-origin relative paths through the public gateway. This avoids exposing
-internal node addresses to users and removes the need for browser-side
-cross-origin routing in the deployed configuration.
+The frontend is built with `VITE_API_BASE_URL=""`, so the browser uses
+same-origin paths through the public entry point.
 
-#### Deployment verification
+#### Deployment verification (2026-11-03)
 
-The following checks were completed:
+Three analyses were submitted concurrently from outside the cluster to
+`http://10.1.75.51:3204/v1/jobs`:
 
-1. Nginx configuration validation passed with `nginx -t`.
-2. The public URL returned `HTTP/1.1 200 OK` with the frontend HTML shell.
-3. The real 6.7 MB `contours_1m.kml` file was uploaded from outside the
-   cluster to `http://10.1.75.51:3204/analyzeContour`.
-4. The complete request finished successfully in **19.06 seconds**.
-5. The pipeline parsed **2,711 contours**, generated a **15 m DEM**, computed
-   terrain derivatives and MCDM pond ranking, delineated the upstream
-   catchment, and returned GeoJSON site and catchment boundaries.
-6. The returned catchment area was approximately **0.61 hectares**.
-7. All stages returned successful health checks before the full-pipeline test.
+| Request | Terrain source | Result | Stage placement | Infrastructure avoided |
+|---|---|---|---|---|
+| Point at 21.1950, 81.4820 (no contour map) | Global DEM | success, 43 s | DEM sys2 · analyse sys3 · catchment sys3 · lookups sys1 | 3 roads |
+| Point inside the demo contours | Bundled contours | success, 51 s | DEM sys3 · analyse sys3 · catchment sys2 · lookups sys1 | 7 roads |
+| 6.7 MB `contours_1m.kml` upload | Uploaded contours | success, 49 s | DEM sys3 · analyse sys3 · catchment sys3 · lookups sys1 (cached) | 7 roads |
+
+Most of each request's time was the public OpenStreetMap (Overpass) lookup,
+33–42 s at the time. In the web app the lookup starts when a point is
+selected, so it is usually cached before *Recommend* is pressed.
+`http://10.1.75.51:3201/` returned `308` to `:3204`.
 
 #### Memory verification
 
-Peak observed resident memory remained below the 500 MB per-node limit during
-the full-load check:
+Peak unreclaimable memory per node during the concurrent run (500 MB limit):
 
-| Node | Observed RSS |
-|---|---:|
-| `sys1` frontend | approximately 19.9 MB |
-| `sys2` parsing/DEM | approximately 241 MB |
-| `sys3` terrain/ranking | approximately 361 MB |
-| `sys4` gateway/catchment | approximately 295 MB |
-
-No out-of-memory errors were observed. Idle memory on `sys2` and `sys3` was
-approximately 166 MB, and the frontend SPA server used approximately 19.9 MB.
-These figures are deployment observations for the verified test workload, not
-capacity guarantees for arbitrarily large contour files or unrestricted
-concurrency.
+| Node | Idle | Peak |
+|---|---:|---:|
+| `sys1` edge (incl. the OpenTelemetry backends) | 249 MB | 255 MB |
+| `sys2` worker | 138 MB | 240 MB |
+| `sys3` worker | 138 MB | 318 MB |
+| `sys4` gateway + Nginx | 215 MB | 311 MB |
 
 ### Frontend
 
@@ -761,12 +828,20 @@ coordinates, and it reports that choice in `processing_notes`.
   detailed embankment design are not fully modeled.
 - The bundled fallback dataset is suitable for demonstration and testing, not
   for final site approval.
+- The global DEM is SRTM-derived (~30 m, integer-metre heights). It is fine for
+  screening but misses small bunds, drains and field-scale depressions; upload
+  surveyed contours before design.
+- OpenStreetMap coverage in rural India is incomplete. An empty lookup does
+  not mean the land is empty, so mark wells, houses and field boundaries by
+  hand and verify on the ground. The public Overpass API can be slow or
+  unavailable; results say when infrastructure could not be checked.
 - A field survey, soil investigation, land-ownership review, and engineering
   validation are required before construction.
 
 ### Future improvements
 
-- Rainfall frequency and seasonal time-series integration.
+- Rainfall frequency (IDF) curves instead of a single design storm.
+- Land-ownership / cadastral layers alongside OpenStreetMap infrastructure.
 - Soil, land-cover, infiltration, and evapotranspiration layers.
 - Cut-and-fill earthwork and embankment design.
 - Persistent job queues and progress reporting for very large uploads.

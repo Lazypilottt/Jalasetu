@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -25,6 +26,7 @@ from app.models.schemas import (
     CatchmentResponse,
     CatchmentSummary,
     ElevationRange,
+    InfrastructureSummary,
     InputSummary,
     PondSiteSummary,
     RainfallSummary,
@@ -33,6 +35,9 @@ from app.models.schemas import (
 from app.telemetry import tracer, init_telemetry
 from app.metrics import analyses_total, analysis_duration, stage_duration, runoff_volume
 from app.services.location_search import recommend_locations
+from app.services import exclusions as exclusion_service
+from app.services.infrastructure import LOOKUP_BUDGET_S, fetch_infrastructure
+from app.services.terrain_source import SOURCE_LABEL as GLOBAL_DEM_LABEL, point_in_bundled_extent
 
 from .capacity import CapacityGuard
 from .config import ServiceConfig
@@ -49,6 +54,7 @@ from .stages import (
     analyze_terrain_stage,
     build_dem_stage,
     delineate_catchment_stage,
+    global_dem_stage,
     parse_contours_stage,
     rank_pond_sites_stage,
 )
@@ -81,6 +87,12 @@ PARAM_TYPES = {
     "lat": float,
     "lon": float,
     "radius": float,
+    "max_pond_footprint_m2": float,
+    "terrain_source": str,
+    "avoid_infrastructure": lambda value: str(value).lower() in ("1", "true", "yes", "on"),
+    "exclusion_categories": str,
+    "exclusion_buffer_scale": float,
+    "manual_exclusions": str,
 }
 
 
@@ -140,9 +152,23 @@ def _uploaded_bytes(params: Dict[str, Any]) -> tuple[Optional[bytes], bool]:
             "Upload a .kml or .kmz contour file, or select an area on the map "
             "(selected_latitude, selected_longitude and selected_radius_m) to use the bundled contours."
         )
-    if not BUNDLED_KML.exists():
+    if not _use_global_dem(params, has_upload=False) and not BUNDLED_KML.exists():
         raise ValueError("No contour file was uploaded and the bundled demonstration contours are unavailable.")
     return None, False
+
+
+# The edge's own Overpass budget is LOOKUP_BUDGET_S; allow for the hop.
+INFRASTRUCTURE_WAIT_S = LOOKUP_BUDGET_S + 8.0
+
+
+def _use_global_dem(params: Dict[str, Any], has_upload: bool) -> bool:
+    """Global DEM when asked for, or when no contour map covers the clicked point."""
+    mode = str(params.get("terrain_source") or "auto").lower()
+    if mode == "global_dem":
+        return True
+    if has_upload or mode == "contours" or not _has_selected_area(params):
+        return False
+    return not point_in_bundled_extent(float(params["selected_latitude"]), float(params["selected_longitude"]))
 
 
 def _selected_area(params: Dict[str, Any]) -> Optional[SelectedAreaSummary]:
@@ -186,7 +212,17 @@ class Gateway:
         self.guard = guard or CapacityGuard()
         self.pool = WorkerPool(self.config, self.guard)
 
-    def _prepare(self, file_bytes: bytes, params: Dict[str, Any], observer):
+    def _prepare(self, file_bytes: Optional[bytes], params: Dict[str, Any], observer, point=None):
+        if point is not None:
+            return self.pool.run(
+                "prepare",
+                "/v1/prepare",
+                {"global_dem": {"lat": point[0], "lon": point[1]}, "params": params},
+                local_fn=lambda: global_dem_stage(point[0], point[1], params),
+                decode=lambda data: (ParsedContoursPayload.from_dict(data["contours"]), DEMPayload.from_dict(data["dem"])),
+                observer=observer,
+            )
+
         def local():
             contours = parse_contours_stage(file_bytes)
             return contours, build_dem_stage(contours, params)
@@ -224,30 +260,79 @@ class Gateway:
             observer=observer,
         )
 
+    def _edge_get(self, path: str, query: Dict[str, Any], timeout: float) -> tuple[Optional[Dict[str, Any]], bool]:
+        """GET from the sys1 edge. Returns ``(data, reachable)``."""
+        edge = self.config.edge_url
+        if not edge:
+            return None, False
+        try:
+            response = requests.get(f"{edge}{path}", params=query, timeout=(3.0, timeout))
+            if response.ok:
+                return response.json(), True
+            logger.warning("Edge %s returned HTTP %s, using local service", path, response.status_code)
+        except requests.Timeout as exc:
+            # The edge is up but its upstream is slow; repeating the call here would only double the wait.
+            logger.warning("Edge %s timed out: %s", path, exc)
+            return None, True
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Edge %s failed, using local service: %s", path, exc)
+        return None, False
+
+    def _edge_name(self) -> str:
+        return self.pool.edge.name if self.pool.edge else self.config.node_name
+
     def rainfall(self, latitude: float, longitude: float) -> tuple[Optional[Dict[str, Any]], str]:
         """Climate lookup on the sys1 edge service, falling back to this node."""
-        edge = self.config.edge_url
-        if edge:
-            try:
-                response = requests.get(f"{edge}/v1/rainfall", params={"lat": latitude, "lon": longitude}, timeout=6)
-                if response.ok:
-                    return response.json(), self.pool.edge.name
-            except (requests.RequestException, ValueError) as exc:
-                logger.warning("Edge rainfall lookup failed, using local service: %s", exc)
+        data, _reachable = self._edge_get("/v1/rainfall", {"lat": latitude, "lon": longitude}, timeout=6)
+        if data is not None:
+            return data, self._edge_name()
         from app.services.rainfall_service import RainfallService
 
         return RainfallService().get_rainfall_data(latitude, longitude), self.config.node_name
 
+    def infrastructure(self, latitude: float, longitude: float, radius_m: float) -> tuple[Dict[str, Any], str]:
+        """OpenStreetMap infrastructure lookup on the sys1 edge, falling back to this node."""
+        data, reachable = self._edge_get(
+            "/v1/infrastructure", {"lat": latitude, "lon": longitude, "radius_m": radius_m}, timeout=LOOKUP_BUDGET_S + 5
+        )
+        if data is not None:
+            return data, self._edge_name()
+        if reachable:
+            return {"status": "unavailable", "message": "Infrastructure lookup timed out on the edge node."}, self._edge_name()
+        return fetch_infrastructure(latitude, longitude, radius_m), self.config.node_name
+
+    @staticmethod
+    def _timed(fn, *args):
+        started = time.perf_counter()
+        result, node = fn(*args)
+        return result, node, round((time.perf_counter() - started) * 1000, 1)
+
     def analyze(
         self,
-        file_bytes: bytes,
+        file_bytes: Optional[bytes],
         params: Optional[Dict[str, Any]] = None,
         has_upload: bool = True,
         observer: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> CatchmentResponse:
-        params = params or {}
+        params = dict(params or {})
         t_start = time.perf_counter()
         trace = []
+        notes = []
+
+        def record(stage: str, node: str, duration_ms: float, mode: Optional[str] = None):
+            item = {
+                "stage": stage,
+                "node": node,
+                "mode": mode or ("remote" if node != self.config.node_name else "local"),
+                "duration_ms": duration_ms,
+                "attempts": [],
+            }
+            trace.append(item)
+            if observer:
+                observer({"event": "stage_completed", **item})
+
+        # Not a context manager: leaving one waits for a lookup that already timed out.
+        lookups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lookup")
         with tracer.start_as_current_span("analyze_contour") as parent_span:
             parent_span.set_attribute("has_upload", bool(has_upload))
             if params.get("dem_resolution_m") is not None:
@@ -255,22 +340,100 @@ class Gateway:
 
             try:
                 area = _selected_area(params)
-                (contours, dem), record = self._prepare(file_bytes, params, observer)
-                trace.append(record)
+                use_global = _use_global_dem(params, has_upload)
+                if use_global and area is None:
+                    raise ValueError("Select a point on the map to analyse it with the global elevation source.")
+                terrain_source = "global_dem" if use_global else ("uploaded_contours" if has_upload else "bundled_contours")
+                parent_span.set_attribute("terrain_source", terrain_source)
+
+                # Lookups that need no DEM start now and overlap the prepare stage.
+                avoid_infra = area is not None and params.get("avoid_infrastructure", True) is not False
+                manual_zones = exclusion_service.parse_manual_zones(params.get("manual_exclusions"))
+                survey_radius_m = exclusion_service.survey_radius_for(area.radius_m) if area else None
+                infra_future = (
+                    lookups.submit(self._timed, self.infrastructure, area.latitude, area.longitude, survey_radius_m)
+                    if avoid_infra else None
+                )
+                climate_future = lookups.submit(self._timed, self.rainfall, area.latitude, area.longitude) if area else None
+
+                if use_global:
+                    params["global_dem_half_size_m"] = max(800.0, 2.0 * survey_radius_m)
+                (contours, dem), stage = self._prepare(
+                    file_bytes, params, observer, point=(area.latitude, area.longitude) if use_global else None
+                )
+                trace.append(stage)
                 del file_bytes
-                if not contours.features:
+                if not use_global and not contours.features:
                     raise ValueError("No valid contour features with elevation data could be extracted from the file.")
-                (terrain, ranking), record = self._analyze(dem, params, observer)
-                trace.append(record)
-                area_notes = []
+                if use_global:
+                    notes.append(
+                        f"No contour map covers this point; built the DEM from {GLOBAL_DEM_LABEL}. "
+                        "Upload a surveyed contour map for engineering-grade results."
+                    )
+
+                # No-build zones are built here once and applied by whichever
+                # node runs the ranking stage.
+                rank_params = dict(params)
+                infra, plan = None, None
+                if area is not None and (avoid_infra or manual_zones):
+                    infra, infra_node, infra_ms = {"status": "disabled"}, self.config.node_name, 0.0
+                    if infra_future is not None:
+                        try:
+                            infra, infra_node, infra_ms = infra_future.result(timeout=INFRASTRUCTURE_WAIT_S)
+                        except FutureTimeout:
+                            infra = {"status": "unavailable", "message": "Infrastructure lookup timed out."}
+                        record("infrastructure", infra_node, infra_ms)
+                    plan = exclusion_service.plan_exclusions(
+                        infra, area.latitude, area.longitude, survey_radius_m,
+                        categories=params.get("exclusion_categories"),
+                        buffer_scale=float(params.get("exclusion_buffer_scale") or 1.0),
+                        manual_zones=manual_zones,
+                    )
+                    rank_params["exclusion_zones"] = plan["zones"]
+                    rank_params["survey_area"] = plan["survey"] if plan["apply_survey"] else None
+
+                (terrain, ranking), stage = self._analyze(dem, rank_params, observer)
+                trace.append(stage)
+
+                infrastructure_summary = None
+                if plan is not None:
+                    outcome = exclusion_service.summarize(
+                        infra, plan, ranking.exclusion_stats,
+                        params.get("exclusion_categories"), float(params.get("exclusion_buffer_scale") or 1.0),
+                    )
+                    infrastructure_summary = InfrastructureSummary(**outcome["summary"])
+                    if outcome["note"]:
+                        notes.append(outcome["note"])
                 if area is not None:
-                    area_notes.append(f"Prioritizing candidate sites within the selected {area.radius_m:.0f}m map radius.")
+                    notes.append(f"Prioritizing candidate sites within the selected {area.radius_m:.0f}m map radius.")
                     if ranking.candidates:
-                        area_notes.append(_prioritize_selected_area(ranking, area))
+                        notes.append(_prioritize_selected_area(ranking, area))
+
+                # Climate feeds the runoff estimate, so it is resolved before catchment.
+                rainfall_summary = None
+                if ranking.candidates or area is not None:
+                    try:
+                        if climate_future is not None:
+                            rain_data, climate_node, climate_ms = climate_future.result(timeout=15)
+                        else:
+                            top = ranking.candidates[0]
+                            rain_data, climate_node, climate_ms = self._timed(self.rainfall, float(top["latitude"]), float(top["longitude"]))
+                        rainfall_summary = RainfallSummary(**rain_data)
+                        record("climate", climate_node, climate_ms)
+                        recommended = rain_data.get("recommended_design_rainfall_mm")
+                        if params.get("design_rainfall_mm") is None and recommended:
+                            params["design_rainfall_mm"] = float(recommended)
+                            notes.append(
+                                f"Using the location's design storm of {float(recommended):.0f} mm/24 h "
+                                f"({rainfall_summary.source}) for runoff."
+                            )
+                    except Exception as exc:
+                        logger.warning("Rainfall lookup failed: %s", exc)
+
                 catchment = None
                 if ranking.candidates:
-                    catchment, record = self._catchment(terrain, ranking, params, observer)
-                    trace.append(record)
+                    catchment, stage = self._catchment(terrain, ranking, params, observer)
+                    trace.append(stage)
 
                 # Child span 6: estimate_runoff
                 t_runoff = time.perf_counter()
@@ -290,32 +453,11 @@ class Gateway:
                         logger.error("estimate_runoff stage failed: %s", exc, exc_info=True)
                         raise
 
-                rainfall_summary = None
-                if ranking.candidates:
-                    if observer:
-                        observer({"event": "stage_dispatched", "stage": "climate", "node": self.pool.edge.name if self.pool.edge else self.config.node_name})
-                    t_climate = time.perf_counter()
-                    try:
-                        top = ranking.candidates[0]
-                        rain_data, climate_node = self.rainfall(float(top["latitude"]), float(top["longitude"]))
-                        rainfall_summary = RainfallSummary(**rain_data)
-                    except Exception as exc:
-                        climate_node = self.config.node_name
-                        logger.warning("Rainfall enrichment failed: %s", exc)
-                    record = {
-                        "stage": "climate",
-                        "node": climate_node,
-                        "mode": "remote" if climate_node != self.config.node_name else "local",
-                        "duration_ms": round((time.perf_counter() - t_climate) * 1000, 1),
-                        "attempts": [],
-                    }
-                    trace.append(record)
-                    if observer:
-                        observer({"event": "stage_completed", **record})
-
                 resp = _public_response(contours, dem, terrain, ranking, catchment, rainfall_summary)
                 resp.selected_area = area
-                resp.processing_notes = area_notes + resp.processing_notes
+                resp.terrain_source = terrain_source
+                resp.infrastructure = infrastructure_summary
+                resp.processing_notes = notes + resp.processing_notes
                 resp.execution = {
                     "gateway": self.config.node_name,
                     "total_ms": round((time.perf_counter() - t_start) * 1000, 1),
@@ -326,8 +468,8 @@ class Gateway:
                 parent_span.set_attribute("dem_resolution_m", float(dem.resolution))
                 parent_span.set_attribute("num_contours", int(len(contours.features)))
                 parent_span.set_attribute("candidate_count", int(len(ranking.candidates)))
-                for record in trace:
-                    parent_span.set_attribute(f"node.{record['stage']}", record["node"])
+                for item in trace:
+                    parent_span.set_attribute(f"node.{item['stage']}", item["node"])
                 if catchment:
                     parent_span.set_attribute("catchment_area_m2", float(catchment.area_m2))
                     parent_span.set_attribute("runoff_volume_m3", float(runoff_vol))
@@ -344,6 +486,8 @@ class Gateway:
                 parent_span.record_exception(exc)
                 parent_span.set_status(StatusCode.ERROR, str(exc))
                 raise
+            finally:
+                lookups.shutdown(wait=False)
 
 
 def _public_response(
@@ -354,13 +498,16 @@ def _public_response(
     catchment: Any,
     rainfall_summary: Optional[RainfallSummary] = None,
 ) -> CatchmentResponse:
+    dem_data = dem.to_dem_data()
     elevations = [float(item["elevation"]) for item in contours.features]
-    native_ranking = ranking.to_result(dem.to_dem_data())
+    if not elevations:  # global DEM: no contour lines
+        elevations = [dem_data.min_elevation, dem_data.max_elevation]
+    native_ranking = ranking.to_result(dem_data)
     candidates = native_ranking.candidates
     input_summary = InputSummary(
-        num_contours=len(elevations),
-        elevation_min=min(elevations),
-        elevation_max=max(elevations),
+        num_contours=len(contours.features),
+        elevation_min=round(min(elevations), 1),
+        elevation_max=round(max(elevations), 1),
         dem_resolution_m=dem.resolution,
         utm_crs=dem.crs,
     )
@@ -385,7 +532,11 @@ def _public_response(
         for c in candidates
     ]
     notes = [
-        f"Parsed {len(elevations)} contour lines with elevations ranging from {min(elevations):.1f}m to {max(elevations):.1f}m.",
+        (
+            f"Parsed {len(contours.features)} contour lines with elevations ranging from {min(elevations):.1f}m to {max(elevations):.1f}m."
+            if contours.features
+            else f"Global DEM elevations range from {min(elevations):.1f}m to {max(elevations):.1f}m."
+        ),
         f"Generated DEM grid at {dem.resolution:.1f}m resolution in {dem.crs}.",
         f"Computed terrain derivatives: mean slope={terrain.mean_slope_deg:.1f}°, mean suitability={terrain.mean_suitability:.1f}/100.",
         *ranking.notes,
@@ -452,7 +603,7 @@ def _public_response(
     dem_mesh = None
     try:
         import numpy as np
-        arr = dem.to_dem_data().array
+        arr = dem_data.array
         nrows, ncols = arr.shape
         r_step = max(1, nrows // 50)
         c_step = max(1, ncols // 50)
@@ -485,7 +636,12 @@ def _public_response(
 
 
 def _run_job(gateway: Gateway, job: Job) -> Dict[str, Any]:
-    file_bytes = job.file_bytes if job.has_upload else BUNDLED_KML.read_bytes()
+    if job.has_upload:
+        file_bytes = job.file_bytes
+    elif _use_global_dem(job.params, has_upload=False):
+        file_bytes = None
+    else:
+        file_bytes = BUNDLED_KML.read_bytes()
     job.file_bytes = None
     try:
         result = gateway.analyze(file_bytes, job.params, has_upload=job.has_upload, observer=job.observe)
@@ -499,7 +655,7 @@ def _run_job(gateway: Gateway, job: Job) -> Dict[str, Any]:
     except Exception as exc:
         logger.exception("analysis job %s failed", job.id)
         raise GatewayError(str(exc), 422) from exc
-    if not job.has_upload:
+    if result.terrain_source == "bundled_contours":
         result.processing_notes.insert(
             0, "No contour file was uploaded; analysed the bundled contours_1m.kml demonstration dataset."
         )
@@ -603,6 +759,19 @@ def create_app(config: Optional[ServiceConfig] = None) -> Flask:
             return jsonify({"error": "Invalid numerical coordinates"}), 422
         svc = RainfallService()
         return jsonify(svc.get_rainfall_data(lat, lon))
+
+    @app.get("/v1/infrastructure")
+    def infrastructure_endpoint():
+        try:
+            lat = float(request.args["lat"])
+            lon = float(request.args["lon"])
+            radius = float(request.args.get("radius_m", 400))
+        except (KeyError, TypeError, ValueError):
+            return _error("lat, lon (and optional radius_m) must be numbers", 422)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180 and 50 <= radius <= 3000):
+            return _error("lat/lon out of range or radius_m outside 50-3000", 422)
+        data, _node = gateway.infrastructure(lat, lon, radius)
+        return jsonify(data)
 
     @app.get("/analyzeContour/schema")
     def schema():

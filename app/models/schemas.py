@@ -156,6 +156,20 @@ class RainfallResponse(BaseModel):
     hydrological_notes: Optional[str] = None
 
 
+class InfrastructureSummary(BaseModel):
+    """Existing infrastructure kept out of pond siting (OpenStreetMap + user-marked zones)."""
+    status: str = Field(..., description="'ok', 'unavailable' (lookup failed), or 'disabled'")
+    source: Optional[str] = Field(None, description="Data source of the mapped features")
+    message: Optional[str] = Field(None, description="Human-readable outcome of the lookup")
+    survey_radius_m: Optional[float] = Field(None, description="Radius checked for infrastructure; candidates are limited to it")
+    categories: List[str] = Field(default_factory=list, description="Infrastructure categories that were avoided")
+    buffer_scale: float = Field(1.0, description="Multiplier applied to each category's safety buffer")
+    counts: Dict[str, int] = Field(default_factory=dict, description="Features avoided per category (incl. 'manual')")
+    excluded_area_m2: float = Field(0.0, description="No-build area inside the survey circle")
+    zones_geojson: Optional[Dict[str, Any]] = Field(None, description="Buffered no-build zones, dissolved per category (WGS84)")
+    features_geojson: Optional[Dict[str, Any]] = Field(None, description="Mapped infrastructure features as fetched (WGS84)")
+
+
 class CatchmentResponse(BaseModel):
     """Master response payload for contour terrain & pond catchment analysis."""
     status: str = Field(
@@ -191,6 +205,13 @@ class CatchmentResponse(BaseModel):
     )
     dem_mesh: Optional[Dict[str, Any]] = Field(
         None, description="Downsampled 3D elevation mesh and relief matrix for raised-relief rendering"
+    )
+    terrain_source: Optional[str] = Field(
+        None,
+        description="'uploaded_contours', 'bundled_contours', or 'global_dem' (point anywhere, no contour file)",
+    )
+    infrastructure: Optional[InfrastructureSummary] = Field(
+        None, description="Existing infrastructure excluded from siting"
     )
     execution: Optional[Dict[str, Any]] = Field(
         None,

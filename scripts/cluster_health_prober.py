@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger("cluster_health")
 
 BACKENDS = {
-    "sys1": {"url": "http://172.17.0.2:3000/health", "role": "edge: frontend, rainfall"},
+    "sys1": {"url": "http://172.17.0.2:3000/health", "role": "edge: frontend, rainfall, infrastructure"},
     "sys2": {"url": "http://172.17.0.3:3000/health", "role": "stage-worker (affinity: prepare, catchment)"},
     "sys3": {"url": "http://172.17.0.4:3000/health", "role": "stage-worker (affinity: analyze)"},
     "sys4": {"url": "http://127.0.0.1:8000/health", "role": "gateway: job queue, scheduler, fallback"},

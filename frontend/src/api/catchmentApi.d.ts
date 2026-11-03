@@ -80,6 +80,19 @@ export interface CatchmentResponse {
   alternative_sites: PondSiteSummary[];
   catchment?: CatchmentSummary | null;
   processing_notes: string[];
+  terrain_source?: 'uploaded_contours' | 'bundled_contours' | 'global_dem' | null;
+  infrastructure?: {
+    status: 'ok' | 'unavailable' | 'disabled';
+    source?: string | null;
+    message?: string | null;
+    survey_radius_m?: number | null;
+    categories: string[];
+    buffer_scale: number;
+    counts: Record<string, number>;
+    excluded_area_m2: number;
+    zones_geojson?: GeoJSONFeatureCollection | null;
+    features_geojson?: GeoJSONFeatureCollection | null;
+  } | null;
   /** Distributed deployments only: where and how long each stage ran. */
   execution?: AnalysisExecution | null;
 }
@@ -200,6 +213,26 @@ export function runAnalysis(
 /** Resolves to null on the single-node FastAPI backend. */
 export function getClusterStatus(options?: { signal?: AbortSignal }): Promise<ClusterStatus | null>;
 
+export interface InfrastructureLookup {
+  status: 'ok' | 'unavailable';
+  source?: string;
+  message?: string;
+  radius_m: number;
+  counts: Record<string, number>;
+  features: GeoJSONFeatureCollection;
+  cached?: boolean;
+}
+
+export function getInfrastructure(
+  latitude: number,
+  longitude: number,
+  radiusM: number,
+  options?: { signal?: AbortSignal }
+): Promise<InfrastructureLookup>;
+
+export interface PlaceResult { name: string; detail: string; latitude: number; longitude: number }
+export function searchPlaces(query: string, options?: { signal?: AbortSignal }): Promise<PlaceResult[]>;
+
 export function getHealthStatus(): Promise<HealthResponse>;
 
 export function getCatchmentSchema(): Promise<any>;
@@ -214,6 +247,8 @@ declare const catchmentApi: {
   runAnalysis: typeof runAnalysis;
   buildAnalysisForm: typeof buildAnalysisForm;
   getClusterStatus: typeof getClusterStatus;
+  getInfrastructure: typeof getInfrastructure;
+  searchPlaces: typeof searchPlaces;
   getHealthStatus: typeof getHealthStatus;
   getCatchmentSchema: typeof getCatchmentSchema;
   normalizeCatchmentError: typeof normalizeCatchmentError;

@@ -7,7 +7,7 @@ capacity at that moment.
 
 | Node | Module | Role | Heavy stages |
 | --- | --- | --- | --- |
-| `sys1` | `distributed.sys1` | Edge: built SPA, climate/rainfall API (also used by the gateway for every analysis), capacity reporting. Standard library only. | none |
+| `sys1` | `distributed.sys1` | Edge: built SPA, climate/rainfall API and existing-infrastructure lookup (OpenStreetMap), both used by the gateway for every analysis, capacity reporting. Standard library only. | none |
 | `sys2` | `distributed.sys2` | Stage worker. Wins ties for parse + DEM and catchment. | all |
 | `sys3` | `distributed.sys3` | Stage worker. Wins ties for terrain + ranking. | all |
 | `sys4` | `distributed.sys4` | Gateway: job queue, scheduler, Nginx entry point; runs a stage itself only when the workers are busy and it has headroom. | all (fallback) |
@@ -21,10 +21,11 @@ virtualenv. Its edge service needs about 20–35 MB.
 
 | Stage | Endpoint on a worker | Payload in → out |
 | --- | --- | --- |
-| `prepare` | `POST /v1/prepare` | KML/KMZ bytes → contours + DEM |
-| `analyze` | `POST /v1/analyze` | DEM → terrain rasters + ranked sites |
+| `prepare` | `POST /v1/prepare` | KML/KMZ bytes → contours + DEM, or `{"global_dem": {lat, lon}}` → DEM from global elevation tiles |
+| `infrastructure` | `GET /v1/infrastructure` on sys1 | point + radius → OpenStreetMap features to avoid (runs in parallel with `prepare`) |
+| `analyze` | `POST /v1/analyze` | DEM + no-build zones → terrain rasters + ranked sites (zones are masked before ranking) |
+| `climate` | `GET /v1/rainfall` on sys1 | point → rainfall regime; its design storm feeds runoff unless the user set one |
 | `catchment` | `POST /v1/catchment` | terrain + ranking → catchment + SCS-CN runoff |
-| `climate` | `GET /v1/rainfall` on sys1 | site lat/lon → rainfall regime |
 
 Payloads are JSON. Rasters are base64 `.npy` arrays carrying their shape,
 dtype, CRS, affine transform and bounds. Workers also keep the finer-grained
@@ -69,7 +70,9 @@ queues `JALASETU_MAX_QUEUED_JOBS=6` more. Waiting uploads are capped at
 | `GET` | `/health` | Gateway capacity and queue stats. |
 
 Every successful result carries `execution.stages`: the node, mode and
-duration of each stage. A request without a file must include
+duration of each stage. The gateway builds the buffered no-build zones once
+(WGS84 GeoJSON) and sends them with the `analyze` stage, so whichever worker
+ranks the sites masks the same zones on its own DEM grid. A request without a file must include
 `selected_latitude`, `selected_longitude` and `selected_radius_m` to use the
 bundled contours. Otherwise the gateway answers `422`, matching the FastAPI app.
 

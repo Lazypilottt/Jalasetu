@@ -6,13 +6,15 @@ import CatchmentDetailsPanel from './components/CatchmentDetailsPanel';
 import ProcessingNotesBanner from './components/ProcessingNotesBanner';
 import RainfallPanel from './components/RainfallPanel';
 import AnalysisSettings from './components/AnalysisSettings';
+import SiteConstraintsPanel, { surveyRadiusFor } from './components/SiteConstraintsPanel';
 import PipelineProgress from './components/PipelineProgress';
 import ClusterPanel from './components/ClusterPanel';
 import ResultsToolbar from './components/ResultsToolbar';
 import HistoryPanel from './components/HistoryPanel';
-import { runAnalysis } from './api/catchmentApi';
+import { getInfrastructure, runAnalysis } from './api/catchmentApi';
 import useClusterStatus from './hooks/useClusterStatus';
-import { loadSettings, saveSettings, settingsToParams, validateSettings } from './utils/settings';
+import useTheme from './hooks/useTheme';
+import { loadSettings, saveSettings, settingsToParams, terrainPlanFor, validateSettings } from './utils/settings';
 import { addHistoryEntry, clearHistory, loadHistory, summarizeResult } from './utils/history';
 import { readSelectionFromHash, writeSelectionToHash } from './utils/urlState';
 
@@ -36,15 +38,35 @@ function initialSettings() {
   return settings;
 }
 
+function readFlag(key, fallback) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === null ? fallback : value === 'true';
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFlag(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // convenience only
+  }
+}
+
+const THEME_ICONS = { system: '◐', light: '☀', dark: '☾' };
+const SAME_POINT_EPS = 0.000001;
+
 /**
- * Main Jalasetu Application Component
+ * Main JalaSetu application.
  *
  * Coordinates end-to-end user workflows:
- *  - File upload, client-side validation, and analysis through the distributed job queue
- *    (falls back to the synchronous FastAPI endpoint on a single-node backend)
- *  - Analysis settings, shareable map selection, and recent-analysis history
+ *  - Click anywhere (or search) to pick a site; contours are used where they exist,
+ *    a global DEM elsewhere, and existing infrastructure is kept out of the siting
+ *  - Upload, analysis settings, site constraints, shareable selection, history
  *  - Live pipeline progress and per-node cluster capacity
- *  - Automatic map view synchronization and result layer rendering
+ *  - Theme (system / light / dark) and map synchronisation
  */
 export default function App() {
   const [uploadedFile, setUploadedFile] = useState(null);
@@ -57,16 +79,53 @@ export default function App() {
   const [progress, setProgress] = useState(null);
   const [history, setHistory] = useState(loadHistory);
   const [analysisRequestToken, setAnalysisRequestToken] = useState(0);
+  const [manualZones, setManualZones] = useState([]);
+  const [clickMode, setClickMode] = useState('select');
+  const [zoneRadius, setZoneRadius] = useState(25);
+  const [autoRecommend, setAutoRecommend] = useState(() => readFlag('jalasetu.autoRecommend', false));
+  const [infraPreview, setInfraPreview] = useState({ loading: false, data: null, error: null });
   const cluster = useClusterStatus({ active: isLoading });
+  const theme = useTheme();
 
   const settingsErrors = validateSettings(settings);
   const selectedArea = useMemo(
     () => (selection ? { ...selection, radiusM: settings.radiusM } : null),
     [selection, settings.radiusM]
   );
+  const terrainPlan = terrainPlanFor(settings, uploadedFile, selectedArea);
 
   useEffect(() => saveSettings(settings), [settings]);
   useEffect(() => writeSelectionToHash(selectedArea), [selectedArea]);
+  useEffect(() => writeFlag('jalasetu.autoRecommend', autoRecommend), [autoRecommend]);
+
+  // Preview mapped infrastructure around the selected point before analysis.
+  const previewKey = selectedArea && settings.avoid_infrastructure
+    ? `${selectedArea.latitude.toFixed(5)},${selectedArea.longitude.toFixed(5)},${Math.round(surveyRadiusFor(selectedArea.radiusM))}`
+    : null;
+  useEffect(() => {
+    if (!previewKey) {
+      setInfraPreview({ loading: false, data: null, error: null });
+      return undefined;
+    }
+    const [lat, lon, radius] = previewKey.split(',').map(Number);
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setInfraPreview((prev) => ({ ...prev, loading: true, error: null }));
+      try {
+        const data = await getInfrastructure(lat, lon, radius, { signal: controller.signal });
+        if (!controller.signal.aborted) setInfraPreview({ loading: false, data, error: null });
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          // The single-node FastAPI app without this route, or a network error.
+          setInfraPreview({ loading: false, data: null, error: err.status === 404 ? null : err.message });
+        }
+      }
+    }, 800);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [previewKey]);
 
   const resetResults = () => {
     setAnalysisResult(null);
@@ -75,10 +134,6 @@ export default function App() {
     setProgress(null);
   };
 
-  /**
-   * Invoked when a new file is chosen or dropped in the UploadPanel.
-   * Clears any previous analysis results; the selected area is kept.
-   */
   const handleFileSelect = (file) => {
     setUploadedFile(file);
     resetResults();
@@ -90,8 +145,11 @@ export default function App() {
     setIsLoading(false);
   };
 
+  const requestAnalysis = () => setAnalysisRequestToken((token) => token + 1);
+
   const handleAreaSelect = ({ latitude, longitude }) => {
     setSelection({ latitude, longitude });
+    if (autoRecommend && !isLoading && settingsErrors.length === 0) requestAnalysis();
   };
 
   const handleAreaClear = () => {
@@ -99,7 +157,12 @@ export default function App() {
     setFocusedSite(null);
   };
 
-  const requestAnalysis = () => setAnalysisRequestToken((token) => token + 1);
+  const handleAddZone = ({ lat, lon }) => {
+    setManualZones((zones) => [
+      ...zones,
+      { id: `${Date.now()}-${zones.length}`, lat, lon, radius_m: zoneRadius, label: `Marked zone ${zones.length + 1}` },
+    ]);
+  };
 
   const analyze = useCallback(
     (file, params) => {
@@ -114,6 +177,7 @@ export default function App() {
     setAnalysisError(null);
     setFocusedSite(null);
     setIsLoading(false);
+    setClickMode('select');
     setHistory(addHistoryEntry(summarizeResult(response, { fileName: uploadedFile?.name, settings, selectedArea })));
   };
 
@@ -137,49 +201,61 @@ export default function App() {
           selected_radius_m: selectedArea.radiusM,
         }
       : {}),
+    ...(manualZones.length
+      ? { manual_exclusions: JSON.stringify(manualZones.map(({ lat, lon, radius_m, label }) => ({ lat, lon, radius_m, label }))) }
+      : {}),
   };
 
-  // Derive human-readable header status indicator
+  // The result's own infrastructure is shown once it is for the current point.
+  const resultMatchesSelection = Boolean(
+    analysisResult?.selected_area && selectedArea &&
+      Math.abs(analysisResult.selected_area.latitude - selectedArea.latitude) < SAME_POINT_EPS &&
+      Math.abs(analysisResult.selected_area.longitude - selectedArea.longitude) < SAME_POINT_EPS
+  );
+  const mapInfrastructure = resultMatchesSelection && analysisResult?.infrastructure?.features_geojson
+    ? analysisResult.infrastructure.features_geojson
+    : infraPreview.data?.status === 'ok' ? infraPreview.data.features : null;
+  const mapZones = resultMatchesSelection ? analysisResult?.infrastructure?.zones_geojson : null;
+
   const getHeaderStatus = () => {
-    if (isLoading) {
-      return { dotClass: 'status-dot status-dot-loading', label: 'Analyzing Terrain...', badgeClass: 'badge-header-loading' };
-    }
-    if (analysisError) {
-      return { dotClass: 'status-dot status-dot-error', label: 'Analysis Failed', badgeClass: 'badge-header-error' };
-    }
+    if (isLoading) return { dotClass: 'status-dot status-dot-loading', label: 'Analyzing terrain…', badgeClass: 'badge-header-loading' };
+    if (analysisError) return { dotClass: 'status-dot status-dot-error', label: 'Analysis failed', badgeClass: 'badge-header-error' };
     if (analysisResult && selectedArea) {
       const analyzed = analysisResult.selected_area;
-      const selectionChanged =
-        !analyzed ||
-        Math.abs(Number(analyzed.latitude) - selectedArea.latitude) > 0.000001 ||
-        Math.abs(Number(analyzed.longitude) - selectedArea.longitude) > 0.000001 ||
-        Math.abs(Number(analyzed.radius_m) - selectedArea.radiusM) > 0.5;
-      if (selectionChanged) {
-        return { dotClass: 'status-dot status-dot-ready', label: 'New Area Selected', badgeClass: 'badge-header-ready' };
-      }
+      const changed = !analyzed || !resultMatchesSelection || Math.abs(Number(analyzed.radius_m) - selectedArea.radiusM) > 0.5;
+      if (changed) return { dotClass: 'status-dot status-dot-ready', label: 'New point selected', badgeClass: 'badge-header-ready' };
     }
-    if (analysisResult) {
-      return { dotClass: 'status-dot status-dot-success', label: 'Analysis Complete', badgeClass: 'badge-header-success' };
-    }
-    if (uploadedFile || selectedArea) {
-      return { dotClass: 'status-dot status-dot-ready', label: 'Ready to Analyze', badgeClass: 'badge-header-ready' };
-    }
-    return { dotClass: 'status-dot', label: 'Select an area or upload contours', badgeClass: '' };
+    if (analysisResult) return { dotClass: 'status-dot status-dot-success', label: 'Recommendation ready', badgeClass: 'badge-header-success' };
+    if (uploadedFile || selectedArea) return { dotClass: 'status-dot status-dot-ready', label: 'Ready to analyze', badgeClass: 'badge-header-ready' };
+    return { dotClass: 'status-dot', label: 'Click the map to begin', badgeClass: '' };
   };
 
   const headerStatus = getHeaderStatus();
   const clusterNodes = cluster.data?.nodes || [];
   const nodesUp = clusterNodes.filter((n) => n.reachable !== false).length;
+  const analyzeLabel = terrainPlan?.id === 'global'
+    ? 'Recommend a site here · global DEM'
+    : uploadedFile ? 'Recommend a site in this area' : 'Recommend a site here · demo contours';
 
   return (
     <div className="app-container">
-      {/* Top Application Header */}
       <header className="app-header">
         <div className="brand-section">
-          <span className="brand-logo-icon" aria-hidden="true">JS</span>
+          <span className="brand-logo-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="30" height="30">
+              <defs>
+                <linearGradient id="brandGradient" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#22d3ee" />
+                  <stop offset="1" stopColor="#10b981" />
+                </linearGradient>
+              </defs>
+              <path d="M16 3c5 6.5 9 11.2 9 16a9 9 0 0 1-18 0c0-4.8 4-9.5 9-16z" fill="url(#brandGradient)" />
+              <path d="M10.5 20.5c1.6 1.3 3.4 2 5.5 2s3.9-.7 5.5-2" stroke="#ffffff" strokeWidth="1.6" fill="none" strokeLinecap="round" opacity="0.85" />
+            </svg>
+          </span>
           <div>
             <h1 className="brand-title">JalaSetu</h1>
-            <p className="brand-tagline">Smarter farm pond siting & catchment analysis for villages</p>
+            <p className="brand-tagline">Farm-pond siting console · terrain, hydrology &amp; infrastructure-aware</p>
           </div>
         </div>
 
@@ -192,19 +268,25 @@ export default function App() {
               {nodesUp}/{clusterNodes.length} nodes
             </span>
           )}
-          {/* Dynamic Global Status Badge */}
           <div className={`header-status-badge ${headerStatus.badgeClass}`} role="status" aria-live="polite">
             <span className={headerStatus.dotClass}></span>
             <span>{headerStatus.label}</span>
           </div>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={theme.cycle}
+            title={`Theme: ${theme.mode} (click to change)`}
+            aria-label={`Theme: ${theme.mode}. Click to change.`}
+          >
+            <span aria-hidden="true">{THEME_ICONS[theme.mode]}</span>
+            <span className="theme-toggle-label">{theme.mode}</span>
+          </button>
         </div>
       </header>
 
-      {/* Main Split Layout: Sidebar Controls + Interactive GIS Map */}
       <div className="main-layout">
-        {/* Left Sidebar Area for Controls and Result Panels */}
         <aside className="sidebar-area" aria-label="Control and Analysis Panels">
-          {/* 1. Contour Map Upload Panel */}
           <UploadPanel
             onAnalysisComplete={handleAnalysisComplete}
             onFileSelect={handleFileSelect}
@@ -215,23 +297,22 @@ export default function App() {
             analysisRequestToken={analysisRequestToken}
             allowDefaultContour
             canAnalyze={settingsErrors.length === 0}
-            loadingContent={<PipelineProgress progress={progress} />}
+            loadingContent={
+              <PipelineProgress progress={progress && { ...progress, skipStages: settings.avoid_infrastructure ? [] : ['infrastructure'] }} />
+            }
             params={analysisParams}
           />
 
-          {/* 2. Analysis settings: preset, radius, hydrology, MCDM weights */}
-          <AnalysisSettings settings={settings} onChange={setSettings} disabled={isLoading} />
-
           <div className="selection-help-card" role="status">
             <div className="selection-help-header">
-              <strong>{selectedArea ? 'Land area selected' : 'Select a land area'}</strong>
+              <strong>{selectedArea ? 'Point selected' : 'Pick a point'}</strong>
               {selectedArea && (
                 <button
                   className="btn btn-ghost btn-sm selection-clear-btn"
                   type="button"
                   onClick={handleAreaClear}
                   disabled={isLoading}
-                  aria-label="Clear selected land area"
+                  aria-label="Clear selected point"
                 >
                   Clear
                 </button>
@@ -239,8 +320,8 @@ export default function App() {
             </div>
             <span>
               {selectedArea
-                ? `${selectedArea.radiusM} m radius at ${selectedArea.latitude.toFixed(5)}, ${selectedArea.longitude.toFixed(5)}. Click Analyze to update the recommendation.`
-                : `Click anywhere on the map to select a ${settings.radiusM} m analysis radius before running the analysis.`}
+                ? `${selectedArea.latitude.toFixed(5)}, ${selectedArea.longitude.toFixed(5)} · ${selectedArea.radiusM} m search radius.`
+                : 'Click anywhere on the map, search a village, or use your location. No contour file is needed.'}
             </span>
             {selectedArea && (
               <button
@@ -249,49 +330,64 @@ export default function App() {
                 onClick={requestAnalysis}
                 disabled={isLoading || settingsErrors.length > 0}
               >
-                {uploadedFile ? 'Analyze selected area' : 'Analyze selected area (demo contours)'}
+                {analyzeLabel}
               </button>
             )}
           </div>
 
-          {/* Welcome Intro Card (Shown on First Load / Landing State) */}
-          {!analysisResult && !uploadedFile && !isLoading && (
-            <div className="welcome-intro-card" role="region" aria-label="About Jalasetu">
+          <AnalysisSettings settings={settings} onChange={setSettings} disabled={isLoading} />
+
+          <SiteConstraintsPanel
+            settings={settings}
+            onSettingsChange={setSettings}
+            selectedArea={selectedArea}
+            preview={infraPreview}
+            terrainPlan={terrainPlan}
+            manualZones={manualZones}
+            onRemoveZone={(id) => setManualZones((zones) => zones.filter((z) => z.id !== id))}
+            onClearZones={() => setManualZones([])}
+            markMode={clickMode === 'zone'}
+            onToggleMarkMode={() => setClickMode((mode) => (mode === 'zone' ? 'select' : 'zone'))}
+            zoneRadius={zoneRadius}
+            onZoneRadiusChange={setZoneRadius}
+            disabled={isLoading}
+          />
+
+          {!analysisResult && !uploadedFile && !isLoading && !selectedArea && (
+            <div className="welcome-intro-card" role="region" aria-label="About JalaSetu">
               <div className="welcome-header">
-                <span className="welcome-icon" aria-hidden="true">01</span>
+                <span className="welcome-icon" aria-hidden="true">i</span>
                 <h3 className="welcome-title">Village Pond Siting Assistant</h3>
               </div>
               <p className="welcome-text">
-                Jalasetu analyzes topographic contour maps to identify natural low-lying depressions and calculate upstream rainwater catchment areas for optimal farm pond placement.
+                JalaSetu finds natural low-lying depressions, keeps clear of rivers, tanks, homes, schools and roads,
+                and estimates the rainwater each pond can collect.
               </p>
               <div className="welcome-steps">
                 <div className="welcome-step-item">
                   <span className="step-num">1</span>
-                  <span>Upload a contour map (.kml or .kmz), or click the map to try the bundled demo contours.</span>
+                  <span>Click any point on the map (or search a village). Upload a .kml/.kmz contour map for survey-grade terrain.</span>
                 </div>
                 <div className="welcome-step-item">
                   <span className="step-num">2</span>
-                  <span>Tune the radius, land cover and design storm in Analysis settings.</span>
+                  <span>Review the infrastructure that will be avoided, and mark wells or other no-build zones.</span>
                 </div>
                 <div className="welcome-step-item">
                   <span className="step-num">3</span>
-                  <span>Review ranked pond sites and drainage boundaries, then export GeoJSON or CSV.</span>
+                  <span>Recommend a site, compare alternatives, and export GeoJSON or CSV.</span>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Run summary and exports */}
           <ResultsToolbar result={analysisResult} selectedArea={selectedArea} />
 
-          {/* Processing Notes & Caveats Banner (Renders only when caveats exist) */}
           <ProcessingNotesBanner
             status={analysisResult?.status}
             notes={analysisResult?.processing_notes}
             response={analysisResult}
           />
 
-          {/* Recommended & Alternative Pond Sites Summary Panel */}
           <SiteSummaryPanel
             recommendedSite={analysisResult?.recommended_site}
             alternativeSites={analysisResult?.alternative_sites}
@@ -299,12 +395,11 @@ export default function App() {
             onPanToSite={setFocusedSite}
           />
 
-          {/* Contributing Catchment Basin Hydrology Panel */}
           <CatchmentDetailsPanel catchment={analysisResult?.catchment} />
 
-          {/* Precipitation Regime & Rainfall Analytics Panel */}
           <RainfallPanel
-            rainfall={analysisResult?.rainfall}
+            rainfall={resultMatchesSelection ? analysisResult?.rainfall : null}
+            followPoint={selectedArea}
             onApplyDesignRainfall={(val) => {
               setSettings((current) => ({ ...current, design_rainfall_mm: val }));
               requestAnalysis();
@@ -313,7 +408,6 @@ export default function App() {
             defaultLon={selectedArea?.longitude || analysisResult?.recommended_site?.longitude || 81.28}
           />
 
-          {/* Cluster capacity (distributed deployments only) */}
           <ClusterPanel cluster={cluster} activeProgress={isLoading ? progress : null} />
 
           <HistoryPanel
@@ -324,7 +418,6 @@ export default function App() {
           />
         </aside>
 
-        {/* Right Main Area: Interactive GIS Map */}
         <main className="map-area" aria-label="Interactive GIS Map View">
           <MapView
             analysisData={analysisResult}
@@ -332,6 +425,16 @@ export default function App() {
             selectedArea={selectedArea}
             selectionRadiusM={settings.radiusM}
             onAreaSelect={handleAreaSelect}
+            theme={theme.resolved}
+            clickMode={clickMode}
+            onAddZone={handleAddZone}
+            manualZones={manualZones}
+            infrastructureFeatures={mapInfrastructure}
+            exclusionZones={mapZones}
+            isAnalyzing={isLoading}
+            onRecommendHere={requestAnalysis}
+            autoRecommend={autoRecommend}
+            onToggleAutoRecommend={() => setAutoRecommend((v) => !v)}
           />
         </main>
       </div>

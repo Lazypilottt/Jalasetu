@@ -489,6 +489,66 @@ export async function getRainfallData(latitude, longitude) {
 }
 
 /**
+ * Mapped infrastructure a pond must avoid (rivers, tanks, buildings, schools,
+ * roads, wells) around a point, from OpenStreetMap via the backend.
+ * Resolves with status 'unavailable' when the lookup fails upstream.
+ *
+ * @param {number} latitude
+ * @param {number} longitude
+ * @param {number} radiusM
+ * @param {{ signal?: AbortSignal }} [options={}]
+ * @returns {Promise<{status: string, message?: string, counts: Object, features: Object}>}
+ */
+export async function getInfrastructure(latitude, longitude, radiusM, { signal } = {}) {
+  try {
+    const response = await apiClient.get('/v1/infrastructure', {
+      params: { lat: latitude, lon: longitude, radius_m: Math.round(radiusM) },
+      signal,
+      timeout: 60000,
+    });
+    return response.data;
+  } catch (error) {
+    throw normalizeCatchmentError(error);
+  }
+}
+
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+
+/**
+ * Place search (villages, towns, landmarks) via OpenStreetMap Nominatim.
+ * Callers debounce input; Nominatim allows about one request per second.
+ *
+ * @param {string} query
+ * @param {{ signal?: AbortSignal }} [options={}]
+ * @returns {Promise<Array<{ name: string, detail: string, latitude: number, longitude: number }>>}
+ */
+export async function searchPlaces(query, { signal } = {}) {
+  const coords = query.trim().match(/^(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)$/);
+  if (coords) {
+    const latitude = Number(coords[1]);
+    const longitude = Number(coords[2]);
+    if (Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
+      return [{ name: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`, detail: 'Coordinates', latitude, longitude }];
+    }
+  }
+  try {
+    const response = await axios.get(NOMINATIM_URL, {
+      params: { q: query, format: 'jsonv2', limit: 6, 'accept-language': 'en' },
+      signal,
+      timeout: 10000,
+    });
+    return (response.data || []).map((item) => ({
+      name: item.name || item.display_name.split(',')[0],
+      detail: item.display_name,
+      latitude: Number(item.lat),
+      longitude: Number(item.lon),
+    }));
+  } catch (error) {
+    throw normalizeCatchmentError(error);
+  }
+}
+
+/**
  * Backward-compatibility alias for analyzeContourFile.
  */
 export const analyzeContourMap = analyzeContourFile;
@@ -499,6 +559,8 @@ export default {
   runAnalysis,
   buildAnalysisForm,
   getClusterStatus,
+  getInfrastructure,
+  searchPlaces,
   getHealthStatus,
   getCatchmentSchema,
   getRainfallData,

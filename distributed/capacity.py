@@ -6,9 +6,11 @@ start another heavy stage. It only uses the standard library, so the edge
 service on sys1 can import it without the geospatial stack.
 
 Memory is read from the cgroup (v2, then v1) because that is the limit the
-kernel enforces. The working set is ``memory.current - inactive_file``: the
-same figure the OOM killer and Kubernetes use, so reclaimable page cache does
-not count against the node.
+kernel enforces. Only memory the kernel cannot reclaim counts as used: anon,
+shmem, unreclaimable slab, kernel stacks and socket buffers. Page cache (active
+or inactive) is dropped under pressure, so counting it, as
+``memory.current - inactive_file`` does, made idle workers look full right
+after a deploy had read many files.
 """
 
 from __future__ import annotations
@@ -57,17 +59,6 @@ def _read_int(path: Path) -> Optional[int]:
         return None
 
 
-def _read_stat(path: Path, key: str) -> int:
-    try:
-        for line in path.read_text().splitlines():
-            name, _, value = line.partition(" ")
-            if name == key:
-                return int(value)
-    except (OSError, ValueError):
-        pass
-    return 0
-
-
 def _process_rss_bytes() -> int:
     """Current RSS on Linux; peak RSS elsewhere (development machines)."""
     try:
@@ -80,24 +71,44 @@ def _process_rss_bytes() -> int:
         return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
+V2_UNRECLAIMABLE = ("anon", "shmem", "slab_unreclaimable", "kernel_stack", "sock", "percpu")
+
+
+def _read_stats(path: Path) -> Dict[str, int]:
+    stats: Dict[str, int] = {}
+    try:
+        for line in path.read_text().splitlines():
+            name, _, value = line.partition(" ")
+            if value.isdigit():
+                stats[name] = int(value)
+    except OSError:
+        pass
+    return stats
+
+
 def read_memory() -> Dict[str, Any]:
-    """Return the node's working set and limit in bytes, plus their source."""
+    """Return the node's unreclaimable memory and limit in bytes, plus their source."""
     current = _read_int(_CGROUP_V2 / "memory.current")
     if current is not None:
-        inactive = _read_stat(_CGROUP_V2 / "memory.stat", "inactive_file")
+        stats = _read_stats(_CGROUP_V2 / "memory.stat")
+        if "anon" in stats:
+            used = sum(stats.get(key, 0) for key in V2_UNRECLAIMABLE)
+        else:
+            used = current - stats.get("inactive_file", 0)
         return {
             "source": "cgroup-v2",
-            "working_set": max(0, current - inactive),
+            "working_set": max(0, min(used, current)),
             "limit": _read_int(_CGROUP_V2 / "memory.max"),
         }
     current = _read_int(_CGROUP_V1 / "memory.usage_in_bytes")
     if current is not None:
-        inactive = _read_stat(_CGROUP_V1 / "memory.stat", "total_inactive_file")
+        stats = _read_stats(_CGROUP_V1 / "memory.stat")
+        used = stats.get("total_rss", 0) + stats.get("total_shmem", 0) if "total_rss" in stats else current - stats.get("total_inactive_file", 0)
         limit = _read_int(_CGROUP_V1 / "memory.limit_in_bytes")
         # cgroup v1 reports "no limit" as a huge page-aligned number.
         if limit is not None and limit >= 1 << 60:
             limit = None
-        return {"source": "cgroup-v1", "working_set": max(0, current - inactive), "limit": limit}
+        return {"source": "cgroup-v1", "working_set": max(0, min(used, current)), "limit": limit}
     return {"source": "process-rss", "working_set": _process_rss_bytes(), "limit": None}
 
 

@@ -216,7 +216,9 @@ export function computeCombinedResultsBounds(data) {
  * @param {Object} props
  * @param {Object} props.data - The CatchmentResponse object.
  */
-export default function ResultsLayer({ data = null }) {
+const ALL_LAYERS = Object.freeze({ contours: true, catchment: true, sites: true });
+
+export default function ResultsLayer({ data = null, layers = ALL_LAYERS }) {
   if (!data) return null;
 
   const { recommended_site, alternative_sites = [], catchment } = data;
@@ -237,7 +239,7 @@ export default function ResultsLayer({ data = null }) {
   return (
     <>
       {/* 0. Elevation Contour Lines Overlay */}
-      {data?.contours_geojson && hasValidGeoJSONGeometry(data.contours_geojson) && (
+      {layers.contours !== false && data?.contours_geojson && hasValidGeoJSONGeometry(data.contours_geojson) && (
         <GeoJSON
           key={`contours-overlay-${data.input_summary?.num_contours || 'all'}`}
           data={data.contours_geojson}
@@ -268,7 +270,7 @@ export default function ResultsLayer({ data = null }) {
       )}
 
       {/* 1. Catchment Watershed Drainage Polygon Overlay (Translucent Blue) */}
-      {hasValidGeoJSONGeometry(catchment?.boundary_geojson) && (
+      {layers.catchment !== false && hasValidGeoJSONGeometry(catchment?.boundary_geojson) && (
         <GeoJSON
           key={catchmentKey}
           data={catchment.boundary_geojson}
@@ -323,7 +325,7 @@ export default function ResultsLayer({ data = null }) {
       )}
 
       {/* 2. Alternative Candidate Sites Boundary Polygons (Muted / Lower Opacity) */}
-      {Array.isArray(alternative_sites) &&
+      {layers.sites !== false && Array.isArray(alternative_sites) &&
         alternative_sites.map((site, idx) => {
           if (!hasValidGeoJSONGeometry(site?.boundary_geojson)) return null;
           const siteRank = site.rank || idx + 2;
@@ -378,7 +380,7 @@ export default function ResultsLayer({ data = null }) {
         })}
 
       {/* 3. Top Recommended Pond Site Region Boundary Polygon (Solid Warm Amber / Orange) */}
-      {hasValidGeoJSONGeometry(recommended_site?.boundary_geojson) && (
+      {layers.sites !== false && hasValidGeoJSONGeometry(recommended_site?.boundary_geojson) && (
         <GeoJSON
           key={recommendedBoundaryKey}
           data={recommended_site.boundary_geojson}
@@ -431,7 +433,7 @@ export default function ResultsLayer({ data = null }) {
       )}
 
       {/* 4. Top Recommended Pond Excavation Site Marker Pin */}
-      {recommended_site && typeof recommended_site.latitude === 'number' && typeof recommended_site.longitude === 'number' && (
+      {layers.sites !== false && recommended_site && typeof recommended_site.latitude === 'number' && typeof recommended_site.longitude === 'number' && (
         <Marker
           position={[recommended_site.latitude, recommended_site.longitude]}
           icon={recommendedIcon}
@@ -480,7 +482,7 @@ export default function ResultsLayer({ data = null }) {
       )}
 
       {/* 5. Ranked Alternative Candidate Pond Sites Markers */}
-      {Array.isArray(alternative_sites) &&
+      {layers.sites !== false && Array.isArray(alternative_sites) &&
         alternative_sites.map((site, idx) => {
           if (!site || typeof site.latitude !== 'number' || typeof site.longitude !== 'number') return null;
           const siteRank = site.rank || idx + 2;

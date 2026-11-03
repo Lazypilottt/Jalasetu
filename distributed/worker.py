@@ -22,6 +22,7 @@ from .stages import (
     analyze_terrain_stage,
     build_dem_stage,
     delineate_catchment_stage,
+    global_dem_stage,
     parse_contours_stage,
     rank_pond_sites_stage,
 )
@@ -107,9 +108,13 @@ def create_worker_app(service: str, affinity: Iterable[str], guard: CapacityGuar
     @app.post("/v1/prepare")
     @heavy("prepare")
     def prepare():
-        """Parse contours and build the DEM in one stage call."""
-        raw = _file_bytes()
+        """Parse contours and build the DEM, or build a global DEM around a point."""
         body = request.get_json(silent=True) or {}
+        if body.get("global_dem"):
+            point = body["global_dem"]
+            contours, dem_result = global_dem_stage(float(point["lat"]), float(point["lon"]), body.get("params", {}))
+            return jsonify({"contours": contours.to_dict(), "dem": dem_result.to_dict()})
+        raw = _file_bytes()
         contours = parse_contours_stage(raw)
         del raw
         dem_result = build_dem_stage(contours, body.get("params", {}))
