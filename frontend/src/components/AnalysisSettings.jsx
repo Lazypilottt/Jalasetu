@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import InfoTip from './InfoTip';
 import {
   DEFAULT_SETTINGS,
   LAND_COVER_CN,
@@ -10,11 +11,14 @@ import {
   weightShares,
 } from '../utils/settings';
 
-function NumberField({ id, label, value, onChange, min, max, step = 1, unit, hint, disabled }) {
+function NumberField({ id, label, value, onChange, min, max, step = 1, unit, hint, disabled, tip }) {
   return (
     <label className="settings-field" htmlFor={id}>
       <span className="settings-field-label">
-        {label}
+        <span className="settings-field-name">
+          {label}
+          {tip && <InfoTip text={tip} />}
+        </span>
         {unit && <span className="settings-field-unit">{unit}</span>}
       </span>
       <input
@@ -129,7 +133,7 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
                 <option value="custom">Custom CN</option>
               </select>
             </label>
-            <NumberField id="cn" label="Curve number" value={settings.curve_number} onChange={set('curve_number')} min={30} max={98} disabled={disabled} />
+            <NumberField id="cn" label="Curve number" value={settings.curve_number} onChange={set('curve_number')} min={30} max={98} disabled={disabled} tip="How much rain runs off instead of soaking in (30–98). Higher means more runoff. Pick a land cover to set it." />
             <NumberField
               id="rain"
               label="Design storm"
@@ -139,9 +143,10 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
               min={1}
               max={1000}
               hint="Auto · location storm"
+              tip="Rain falling in one heavy day, used to size the pond. Leave empty to use this location's own value from rainfall records."
               disabled={disabled}
             />
-            <NumberField id="depth" label="Pond depth" unit="m" value={settings.pond_design_depth_m} onChange={set('pond_design_depth_m')} min={0.5} max={10} step={0.5} disabled={disabled} />
+            <NumberField id="depth" label="Pond depth" unit="m" value={settings.pond_design_depth_m} onChange={set('pond_design_depth_m')} min={0.5} max={10} step={0.5} disabled={disabled} tip="Planned water depth. Used to estimate how much the pond can store." />
           </div>
 
           <button type="button" className="settings-advanced-toggle" onClick={() => setShowAdvanced((v) => !v)} aria-expanded={showAdvanced}>
@@ -169,12 +174,15 @@ export default function AnalysisSettings({ settings, onChange, disabled = false 
                 <NumberField id="sites" label="Candidate sites" value={settings.max_candidate_sites} onChange={set('max_candidate_sites')} min={1} max={20} disabled={disabled} />
                 <NumberField id="ideal" label="Ideal slope" unit="°" value={settings.ideal_slope_deg} onChange={set('ideal_slope_deg')} min={0} max={30} step={0.5} disabled={disabled} />
                 <NumberField id="maxslope" label="Max slope" unit="°" value={settings.max_slope_deg} onChange={set('max_slope_deg')} min={0.5} max={45} step={0.5} disabled={disabled} />
-                <NumberField id="threshold" label="Min suitability" unit="/100" value={settings.suitability_threshold} onChange={set('suitability_threshold')} min={0} max={100} disabled={disabled} />
+                <NumberField id="threshold" label="Min suitability" unit="/100" value={settings.suitability_threshold} onChange={set('suitability_threshold')} min={0} max={100} disabled={disabled} tip="Ground scoring below this is never considered. Lower it if no site is found." />
                 <NumberField id="minarea" label="Min footprint" unit="m²" value={settings.min_pond_area_m2} onChange={set('min_pond_area_m2')} min={10} max={100000} step={10} disabled={disabled} />
-                <NumberField id="maxfootprint" label="Max footprint" unit="m²" value={settings.max_pond_footprint_m2} onChange={set('max_pond_footprint_m2')} min={100} max={500000} step={500} disabled={disabled} />
+                <NumberField id="maxfootprint" label="Max footprint" unit="m²" value={settings.max_pond_footprint_m2} onChange={set('max_pond_footprint_m2')} min={100} max={500000} step={500} disabled={disabled} tip="Large flat fields are trimmed to this size around their best spot (10,000 m² = 1 ha)." />
               </div>
 
-              <div className="settings-group-title">Suitability weights</div>
+              <div className="settings-group-title">
+                Suitability weights
+                <InfoTip text="How much each factor counts in the score. TWI (topographic wetness) is high where water naturally gathers." />
+              </div>
               {[
                 ['weight_slope', 'Gentle slope', shares.slope],
                 ['weight_depression', 'Natural depression', shares.depression],

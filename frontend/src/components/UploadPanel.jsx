@@ -256,8 +256,8 @@ export default function UploadPanel({
       {/* Panel Header */}
       <div className="panel-header">
         <div className="panel-title-group">
-          <span className="panel-icon" aria-hidden="true">01</span>
-          <h3 className="panel-title">Upload Contour Map</h3>
+          <span className="panel-icon" aria-hidden="true">03</span>
+          <h3 className="panel-title">Your contour map <span className="panel-title-optional">optional</span></h3>
         </div>
       </div>
 

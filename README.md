@@ -64,6 +64,8 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
 | `/v1/rainfall` returned the SPA's HTML in production, so the rainfall panel never worked. | Explicit Nginx routes for every API path, and an edge service that never bounces requests back. |
 | The distributed gateway ignored the selected map area. | Candidates are re-ranked around the selected point before catchment delineation, matching the single-node pipeline. |
 | A request with no file and no area silently analysed demo data. | It is rejected with a clear 422. |
+| The map showed "API KEY REQUIRED" tiles: the CARTO dark basemap began requiring a key, and other layers used proprietary Esri services. | Every base map now uses free, keyless, open-data sources, and the dark map is OpenStreetMap dimmed in the browser. Leaflet assets and fonts are bundled instead of loaded from CDNs. |
+| The interface was one long scroll of panels with no explanation of terms. | A pinned main action with live progress, Plan / Results / More tabs, an in-app guide, and plain-language explanations for technical settings. |
 | The test suite depended on live third-party APIs. | External lookups are stubbed by default; the suite runs offline in under 30 s. |
 
 ---
@@ -72,6 +74,14 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
 
 ### Interactive frontend
 
+- **Built-in guide**: a *Guide* button (opened automatically on a first visit)
+  walks through quick start, features, map controls, settings, how to read
+  results, data sources and limits. Jargon in the settings has hover/focus
+  explanations.
+- **Simple layout**: one pinned *Recommend a site here* action with live
+  progress, and three tabs — *Plan* (constraints, settings, optional contour
+  upload), *Results* (site, catchment, rainfall, exports) and *More* (history,
+  cluster status, data licences).
 - **Click anywhere to get a recommendation**: pick a point on the map, search
   a village or coordinates, or use your location. Optional one-click
   *auto-recommend* and a *Recommend a site here* button on the map marker.
@@ -82,8 +92,13 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
   result.
 - **Advanced map**: place search, cursor-coordinate HUD, scale bar, locate-me,
   full-screen mode, per-layer toggles (contours, catchment, pond sites,
-  no-build zones, mapped infrastructure, marked zones), and Dark, Satellite,
-  Raised Relief, Topographic, Street and Hybrid base maps.
+  no-build zones, mapped infrastructure, marked zones), and five base maps:
+  Satellite, Terrain, Streets, Villages and Dark.
+- **Free and open sources only, no API keys**: Sentinel-2 cloudless imagery
+  (EOX), OpenStreetMap, OpenTopoMap and Humanitarian OSM tiles, Nominatim
+  search, Overpass, Open-Meteo and AWS Terrain Tiles. The dark map is the OSM
+  style dimmed in the browser. Leaflet's stylesheet, marker icons and the
+  open-licensed fonts are bundled with the app, so no CDN is contacted.
 - **Dark mode**: System / Light / Dark theme toggle, remembered per browser,
   with a dark basemap and dark map controls.
 - **Rainfall at the selected point** before analysis, with the location's

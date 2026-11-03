@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, useMapEvents, ZoomControl } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, Circle, Marker, Popup, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ResultsLayer, { computeCombinedResultsBounds, hasValidGeoJSONGeometry } from './ResultsLayer';
@@ -14,15 +14,20 @@ import {
   ScaleBar,
 } from './MapTools';
 
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+import { DEFAULT_BASEMAP, basemapById } from '../utils/basemaps';
+
 // three.js is ~500 kB; load the 3D viewer only when it is first opened.
 const RaisedReliefModal = lazy(() => import('./RaisedReliefModal'));
 
-// Fix default Leaflet icon paths in Vite / Webpack asset bundling environments
+// Bundle Leaflet's marker images instead of loading them from a CDN.
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
 });
 
 // Generic geographic center of the Indian subcontinent (national scale overview)
@@ -311,20 +316,6 @@ function MapFocusController({ focusedSite, zoom = 16 }) {
   return null;
 }
 
-// Sync base layer selection with Leaflet LayersControl events
-function BaseLayerSync({ setSelectedBase }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!map) return;
-    const handler = (e) => {
-      if (e && e.name) setSelectedBase(e.name);
-    };
-    map.on('baselayerchange', handler);
-    return () => map.off('baselayerchange', handler);
-  }, [map, setSelectedBase]);
-  return null;
-}
-
 function AreaSelectionController({ radiusM, onSelect, clickMode, onAddZone }) {
   useMapEvents({
     click(event) {
@@ -433,8 +424,8 @@ export default function MapView({
   const initialCenter = center || defaultCenter;
   const initialZoom = zoom !== null && zoom !== undefined ? zoom : defaultZoom;
 
-  // Base layer: Satellite by default, the dark basemap in dark mode, until the user picks one.
-  const [selectedBase, setSelectedBase] = useState(theme === 'dark' ? 'Dark' : 'Satellite');
+  // Base layer: satellite by default, the dark basemap in dark mode, until the user picks one.
+  const [selectedBase, setSelectedBase] = useState(DEFAULT_BASEMAP[theme] || DEFAULT_BASEMAP.light);
   const [userPickedBase, setUserPickedBase] = useState(false);
   const [map, setMap] = useState(null);
   const [cursor, setCursor] = useState(null);
@@ -446,7 +437,7 @@ export default function MapView({
   }, []);
 
   useEffect(() => {
-    if (!userPickedBase) setSelectedBase(theme === 'dark' ? 'Dark' : 'Satellite');
+    if (!userPickedBase) setSelectedBase(DEFAULT_BASEMAP[theme] || DEFAULT_BASEMAP.light);
   }, [theme, userPickedBase]);
 
   useEffect(() => {
@@ -477,10 +468,10 @@ export default function MapView({
   const handleSelectMode = (mode) => {
     if (mode === 'relief') {
       setIsRaisedReliefActive(true);
-      pickBase('Raised Relief');
+      pickBase('terrain');
     } else {
       setIsRaisedReliefActive(false);
-      pickBase('Satellite');
+      pickBase('satellite');
     }
   };
 
@@ -502,15 +493,15 @@ export default function MapView({
               onClick={() => handleSelectMode('satellite')}
               title="Show Satellite Imagery view"
             >
-              🛰️ Satellite View
+              Satellite
             </button>
             <button
               type="button"
               className={`btn-mode-pill ${isRaisedReliefActive ? 'active' : ''}`}
               onClick={() => handleSelectMode('relief')}
-              title="Show Raised-Relief Topographic & Hillshade view"
+              title="Contours and hill shading"
             >
-              ⛰️ Raised-Relief Map
+              Terrain
             </button>
             {analysisData?.dem_mesh && (
               <button
@@ -519,7 +510,7 @@ export default function MapView({
                 onClick={() => setIs3DModalOpen(true)}
                 title="Launch interactive 3D physical surface terrain visualizer"
               >
-                🌐 3D Surface
+                3D surface
               </button>
             )}
           </div>
@@ -533,7 +524,10 @@ export default function MapView({
           onToggleFullscreen={() => setIsFullscreen((v) => !v)}
           onLocate={(pos) => onAreaSelect({ ...pos, radiusM: selectionRadiusM })}
         />
-        <LayerPanel layers={layers} onChange={setLayers} />
+        <LayerPanel layers={layers} onChange={setLayers} base={selectedBase} onBaseChange={(id) => {
+          pickBase(id);
+          setIsRaisedReliefActive(id === 'terrain');
+        }} />
         {typeof onToggleAutoRecommend === 'function' && (
           <button
             type="button"
@@ -586,71 +580,22 @@ export default function MapView({
         <ScaleBar />
         <ZoomControl position="bottomright" />
         <CursorTracker onMove={setCursor} />
-        {/* Base layer control: Dark, Satellite, Raised Relief, Topographic, Street, Hybrid */}
-        <BaseLayerSync setSelectedBase={pickBase} />
+        {/* Base map: one keyless, open tile source at a time (see utils/basemaps.js) */}
         <AreaSelectionController radiusM={selectionRadiusM} onSelect={onAreaSelect} clickMode={clickMode} onAddZone={onAddZone} />
-        <LayersControl position="bottomright">
-          <LayersControl.BaseLayer checked={selectedBase === 'Dark'} name="Dark">
+        {(() => {
+          const base = basemapById(selectedBase);
+          return (
             <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-              subdomains="abcd"
-              maxZoom={20}
+              key={base.id}
+              url={base.url}
+              attribution={base.attribution}
+              subdomains={base.subdomains || 'abc'}
+              maxNativeZoom={base.maxNativeZoom}
+              maxZoom={base.maxZoom}
+              className={base.className}
             />
-          </LayersControl.BaseLayer>
-
-          <LayersControl.BaseLayer checked={selectedBase === 'Satellite'} name="Satellite">
-            <>
-              <TileLayer
-                attribution='Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                maxZoom={19}
-              />
-            </>
-          </LayersControl.BaseLayer>
-
-          <LayersControl.BaseLayer checked={selectedBase === 'Raised Relief'} name="Raised Relief">
-            <>
-              <TileLayer
-                attribution='Tiles &copy; Esri &mdash; World Hillshade & Shaded Relief'
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}"
-                maxZoom={19}
-              />
-            </>
-          </LayersControl.BaseLayer>
-
-          <LayersControl.BaseLayer checked={selectedBase === 'Topographic'} name="Topographic">
-            <TileLayer
-              attribution='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
-              url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
-              maxZoom={17}
-            />
-          </LayersControl.BaseLayer>
-
-          <LayersControl.BaseLayer checked={selectedBase === 'Street'} name="Street">
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              maxZoom={19}
-            />
-          </LayersControl.BaseLayer>
-
-          <LayersControl.BaseLayer checked={selectedBase === 'Hybrid'} name="Hybrid">
-            <>
-              <TileLayer
-                attribution='Tiles &copy; Esri &mdash; Imagery'
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                maxZoom={19}
-              />
-              {/* Esri reference/labels overlay on top for hybrid */}
-              <TileLayer
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
-                maxZoom={19}
-                pointerEvents="none"
-              />
-            </>
-          </LayersControl.BaseLayer>
-        </LayersControl>
+          );
+        })()}
 
         {/* Dynamic Bounds Synchronization Controller */}
         {effectiveBounds && (

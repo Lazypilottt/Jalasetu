@@ -1,4 +1,5 @@
 import React from 'react';
+import InfoTip from './InfoTip';
 import { INFRASTRUCTURE_CATEGORIES, TERRAIN_SOURCES, enabledCategories } from '../utils/settings';
 
 /** Mirrors survey_radius_for() in app/services/exclusions.py. */
@@ -71,7 +72,7 @@ export default function SiteConstraintsPanel({
     <div className="panel constraints-panel" role="region" aria-label="Site constraints">
       <div className="panel-header">
         <div className="panel-title-group">
-          <span className="panel-icon" aria-hidden="true">03</span>
+          <span className="panel-icon" aria-hidden="true">01</span>
           <div className="settings-heading">
             <h3 className="panel-title">Site constraints</h3>
             <span className="settings-summary">Keep ponds off existing infrastructure</span>
@@ -147,7 +148,11 @@ export default function SiteConstraintsPanel({
 
             <label className="settings-field settings-field-wide" htmlFor="buffer-scale">
               <span className="settings-field-label">
-                Safety buffer <span className="settings-field-value">×{settings.exclusion_buffer_scale.toFixed(1)}</span>
+                <span className="settings-field-name">
+                  Safety buffer
+                  <InfoTip text="Clearance kept around each type of infrastructure. ×1 uses the distances listed above; ×2 doubles them." />
+                </span>
+                <span className="settings-field-value">×{settings.exclusion_buffer_scale.toFixed(1)}</span>
               </span>
               <input
                 id="buffer-scale"
@@ -170,7 +175,10 @@ export default function SiteConstraintsPanel({
 
         <div className="manual-zones">
           <div className="manual-zones-header">
-            <span className="settings-group-title">Marked no-build zones</span>
+            <span className="settings-group-title">
+              Marked no-build zones
+              <InfoTip text="Places to keep clear that the map does not know about: a well, a temple, a house, a neighbour's field." />
+            </span>
             {manualZones.length > 0 && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={onClearZones} disabled={disabled}>
                 Clear all

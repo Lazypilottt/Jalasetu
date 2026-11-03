@@ -11,6 +11,7 @@ import PipelineProgress from './components/PipelineProgress';
 import ClusterPanel from './components/ClusterPanel';
 import ResultsToolbar from './components/ResultsToolbar';
 import HistoryPanel from './components/HistoryPanel';
+import HelpGuide from './components/HelpGuide';
 import { getInfrastructure, runAnalysis } from './api/catchmentApi';
 import useClusterStatus from './hooks/useClusterStatus';
 import useTheme from './hooks/useTheme';
@@ -56,6 +57,11 @@ function writeFlag(key, value) {
 }
 
 const THEME_ICONS = { system: '◐', light: '☀', dark: '☾' };
+const TABS = [
+  { id: 'plan', label: 'Plan' },
+  { id: 'results', label: 'Results' },
+  { id: 'more', label: 'More' },
+];
 const SAME_POINT_EPS = 0.000001;
 
 /**
@@ -84,6 +90,8 @@ export default function App() {
   const [zoneRadius, setZoneRadius] = useState(25);
   const [autoRecommend, setAutoRecommend] = useState(() => readFlag('jalasetu.autoRecommend', false));
   const [infraPreview, setInfraPreview] = useState({ loading: false, data: null, error: null });
+  const [tab, setTab] = useState('plan');
+  const [guideOpen, setGuideOpen] = useState(() => !readFlag('jalasetu.guideSeen', false));
   const cluster = useClusterStatus({ active: isLoading });
   const theme = useTheme();
 
@@ -97,6 +105,11 @@ export default function App() {
   useEffect(() => saveSettings(settings), [settings]);
   useEffect(() => writeSelectionToHash(selectedArea), [selectedArea]);
   useEffect(() => writeFlag('jalasetu.autoRecommend', autoRecommend), [autoRecommend]);
+
+  const closeGuide = useCallback(() => {
+    setGuideOpen(false);
+    writeFlag('jalasetu.guideSeen', true);
+  }, []);
 
   // Preview mapped infrastructure around the selected point before analysis.
   const previewKey = selectedArea && settings.avoid_infrastructure
@@ -145,7 +158,10 @@ export default function App() {
     setIsLoading(false);
   };
 
-  const requestAnalysis = () => setAnalysisRequestToken((token) => token + 1);
+  const requestAnalysis = () => {
+    setAnalysisError(null);
+    setAnalysisRequestToken((token) => token + 1);
+  };
 
   const handleAreaSelect = ({ latitude, longitude }) => {
     setSelection({ latitude, longitude });
@@ -178,6 +194,7 @@ export default function App() {
     setFocusedSite(null);
     setIsLoading(false);
     setClickMode('select');
+    setTab('results');
     setHistory(addHistoryEntry(summarizeResult(response, { fileName: uploadedFile?.name, settings, selectedArea })));
   };
 
@@ -233,9 +250,21 @@ export default function App() {
   const headerStatus = getHeaderStatus();
   const clusterNodes = cluster.data?.nodes || [];
   const nodesUp = clusterNodes.filter((n) => n.reachable !== false).length;
-  const analyzeLabel = terrainPlan?.id === 'global'
-    ? 'Recommend a site here · global DEM'
-    : uploadedFile ? 'Recommend a site in this area' : 'Recommend a site here · demo contours';
+  const canRun = Boolean(selectedArea || uploadedFile) && settingsErrors.length === 0 && !isLoading;
+  const actionLabel = isLoading
+    ? 'Analysing…'
+    : selectedArea
+      ? 'Recommend a site here'
+      : uploadedFile ? 'Analyse uploaded contours' : 'Pick a point on the map';
+  const actionHint = settingsErrors.length
+    ? settingsErrors[0]
+    : selectedArea
+      ? `${selectedArea.latitude.toFixed(5)}, ${selectedArea.longitude.toFixed(5)} · ${selectedArea.radiusM} m radius · ${terrainPlan?.label || ''}`
+      : uploadedFile
+        ? `Contours: ${uploadedFile.name}. Click the map to focus on one spot.`
+        : 'Click anywhere on the map, search a village, or use your location.';
+
+  const hasResult = Boolean(analysisResult);
 
   return (
     <div className="app-container">
@@ -255,7 +284,7 @@ export default function App() {
           </span>
           <div>
             <h1 className="brand-title">JalaSetu</h1>
-            <p className="brand-tagline">Farm-pond siting console · terrain, hydrology &amp; infrastructure-aware</p>
+            <p className="brand-tagline">Find the right spot for a farm pond</p>
           </div>
         </div>
 
@@ -272,6 +301,10 @@ export default function App() {
             <span className={headerStatus.dotClass}></span>
             <span>{headerStatus.label}</span>
           </div>
+          <button type="button" className="header-btn" onClick={() => setGuideOpen(true)} aria-haspopup="dialog">
+            <span aria-hidden="true">?</span>
+            <span className="header-btn-label">Guide</span>
+          </button>
           <button
             type="button"
             className="theme-toggle"
@@ -287,135 +320,176 @@ export default function App() {
 
       <div className="main-layout">
         <aside className="sidebar-area" aria-label="Control and Analysis Panels">
-          <UploadPanel
-            onAnalysisComplete={handleAnalysisComplete}
-            onFileSelect={handleFileSelect}
-            onFileClear={handleFileClear}
-            onLoadingChange={setIsLoading}
-            onError={handleAnalysisError}
-            analyzeContourFn={analyze}
-            analysisRequestToken={analysisRequestToken}
-            allowDefaultContour
-            canAnalyze={settingsErrors.length === 0}
-            loadingContent={
-              <PipelineProgress progress={progress && { ...progress, skipStages: settings.avoid_infrastructure ? [] : ['infrastructure'] }} />
-            }
-            params={analysisParams}
-          />
-
-          <div className="selection-help-card" role="status">
-            <div className="selection-help-header">
-              <strong>{selectedArea ? 'Point selected' : 'Pick a point'}</strong>
-              {selectedArea && (
-                <button
-                  className="btn btn-ghost btn-sm selection-clear-btn"
-                  type="button"
-                  onClick={handleAreaClear}
-                  disabled={isLoading}
-                  aria-label="Clear selected point"
-                >
-                  Clear
+          {/* Pinned: where, the one main action, and live progress */}
+          <div className={`action-bar ${isLoading ? 'running' : ''}`}>
+            <div className="action-bar-top">
+              <span className={`action-bar-dot ${selectedArea ? 'on' : ''}`} aria-hidden="true" />
+              <div className="action-bar-text">
+                <strong>{selectedArea ? 'Point selected' : uploadedFile ? 'Contour map loaded' : 'Start here'}</strong>
+                <span className={settingsErrors.length ? 'action-bar-error' : ''}>{actionHint}</span>
+              </div>
+              {selectedArea && !isLoading && (
+                <button type="button" className="icon-btn" onClick={handleAreaClear} aria-label="Clear selected point" title="Clear point">
+                  ✕
                 </button>
               )}
             </div>
-            <span>
-              {selectedArea
-                ? `${selectedArea.latitude.toFixed(5)}, ${selectedArea.longitude.toFixed(5)} · ${selectedArea.radiusM} m search radius.`
-                : 'Click anywhere on the map, search a village, or use your location. No contour file is needed.'}
-            </span>
-            {selectedArea && (
-              <button
-                className="btn btn-primary btn-sm btn-block selection-analyze-btn"
-                type="button"
-                onClick={requestAnalysis}
-                disabled={isLoading || settingsErrors.length > 0}
-              >
-                {analyzeLabel}
-              </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-block action-bar-btn"
+              onClick={requestAnalysis}
+              disabled={!canRun}
+            >
+              {isLoading && <span className="loading-spinner-sm" aria-hidden="true" />}
+              {actionLabel}
+            </button>
+            {isLoading && (
+              <PipelineProgress progress={progress && { ...progress, skipStages: settings.avoid_infrastructure ? [] : ['infrastructure'] }} />
+            )}
+            {analysisError && !isLoading && (
+              <div className="action-bar-alert" role="alert">
+                <strong>Could not finish the analysis.</strong> {analysisError.message}
+              </div>
             )}
           </div>
 
-          <AnalysisSettings settings={settings} onChange={setSettings} disabled={isLoading} />
+          <div className="sidebar-tabs" role="tablist" aria-label="Side panel sections">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                id={`tab-${t.id}`}
+                aria-selected={tab === t.id}
+                aria-controls={`panel-${t.id}`}
+                className={`sidebar-tab ${tab === t.id ? 'active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+                {t.id === 'results' && hasResult && tab !== 'results' && <span className="sidebar-tab-dot" aria-label="new results" />}
+              </button>
+            ))}
+          </div>
 
-          <SiteConstraintsPanel
-            settings={settings}
-            onSettingsChange={setSettings}
-            selectedArea={selectedArea}
-            preview={infraPreview}
-            terrainPlan={terrainPlan}
-            manualZones={manualZones}
-            onRemoveZone={(id) => setManualZones((zones) => zones.filter((z) => z.id !== id))}
-            onClearZones={() => setManualZones([])}
-            markMode={clickMode === 'zone'}
-            onToggleMarkMode={() => setClickMode((mode) => (mode === 'zone' ? 'select' : 'zone'))}
-            zoneRadius={zoneRadius}
-            onZoneRadiusChange={setZoneRadius}
-            disabled={isLoading}
-          />
+          {/* Tabs stay mounted so an analysis keeps running while you switch. */}
+          <div className="sidebar-panel" role="tabpanel" id="panel-plan" aria-labelledby="tab-plan" hidden={tab !== 'plan'}>
+            {!selectedArea && !uploadedFile && !hasResult && (
+              <div className="welcome-intro-card" role="region" aria-label="About JalaSetu">
+                <div className="welcome-header">
+                  <span className="welcome-icon" aria-hidden="true">i</span>
+                  <h3 className="welcome-title">New here?</h3>
+                </div>
+                <p className="welcome-text">
+                  Pick any point on the map and JalaSetu suggests where a farm pond should go, keeps clear of rivers,
+                  homes, schools and roads, and estimates how much rainwater it can collect.
+                </p>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setGuideOpen(true)}>
+                  Read the 1-minute guide
+                </button>
+              </div>
+            )}
 
-          {!analysisResult && !uploadedFile && !isLoading && !selectedArea && (
-            <div className="welcome-intro-card" role="region" aria-label="About JalaSetu">
-              <div className="welcome-header">
-                <span className="welcome-icon" aria-hidden="true">i</span>
-                <h3 className="welcome-title">Village Pond Siting Assistant</h3>
+            <SiteConstraintsPanel
+              settings={settings}
+              onSettingsChange={setSettings}
+              selectedArea={selectedArea}
+              preview={infraPreview}
+              terrainPlan={terrainPlan}
+              manualZones={manualZones}
+              onRemoveZone={(id) => setManualZones((zones) => zones.filter((z) => z.id !== id))}
+              onClearZones={() => setManualZones([])}
+              markMode={clickMode === 'zone'}
+              onToggleMarkMode={() => setClickMode((mode) => (mode === 'zone' ? 'select' : 'zone'))}
+              zoneRadius={zoneRadius}
+              onZoneRadiusChange={setZoneRadius}
+              disabled={isLoading}
+            />
+
+            <AnalysisSettings settings={settings} onChange={setSettings} disabled={isLoading} />
+
+            <UploadPanel
+              onAnalysisComplete={handleAnalysisComplete}
+              onFileSelect={handleFileSelect}
+              onFileClear={handleFileClear}
+              onLoadingChange={setIsLoading}
+              onError={handleAnalysisError}
+              analyzeContourFn={analyze}
+              analysisRequestToken={analysisRequestToken}
+              allowDefaultContour
+              canAnalyze={settingsErrors.length === 0}
+              loadingContent={<p className="upload-running-note">Analysis running — progress is shown at the top.</p>}
+              params={analysisParams}
+            />
+          </div>
+
+          <div className="sidebar-panel" role="tabpanel" id="panel-results" aria-labelledby="tab-results" hidden={tab !== 'results'}>
+            {!hasResult && (
+              <div className="empty-state">
+                <span className="empty-state-icon" aria-hidden="true">◎</span>
+                <h3>No recommendation yet</h3>
+                <p>
+                  {selectedArea
+                    ? 'Press “Recommend a site here” above. Results appear here when the analysis finishes.'
+                    : 'Pick a point on the map first, then press “Recommend a site here”.'}
+                </p>
               </div>
-              <p className="welcome-text">
-                JalaSetu finds natural low-lying depressions, keeps clear of rivers, tanks, homes, schools and roads,
-                and estimates the rainwater each pond can collect.
-              </p>
-              <div className="welcome-steps">
-                <div className="welcome-step-item">
-                  <span className="step-num">1</span>
-                  <span>Click any point on the map (or search a village). Upload a .kml/.kmz contour map for survey-grade terrain.</span>
-                </div>
-                <div className="welcome-step-item">
-                  <span className="step-num">2</span>
-                  <span>Review the infrastructure that will be avoided, and mark wells or other no-build zones.</span>
-                </div>
-                <div className="welcome-step-item">
-                  <span className="step-num">3</span>
-                  <span>Recommend a site, compare alternatives, and export GeoJSON or CSV.</span>
-                </div>
+            )}
+
+            <ResultsToolbar result={analysisResult} selectedArea={selectedArea} />
+
+            <ProcessingNotesBanner
+              status={analysisResult?.status}
+              notes={analysisResult?.processing_notes}
+              response={analysisResult}
+            />
+
+            <SiteSummaryPanel
+              recommendedSite={analysisResult?.recommended_site}
+              alternativeSites={analysisResult?.alternative_sites}
+              onSelectSite={setFocusedSite}
+              onPanToSite={setFocusedSite}
+            />
+
+            <CatchmentDetailsPanel catchment={analysisResult?.catchment} />
+
+            <RainfallPanel
+              rainfall={resultMatchesSelection ? analysisResult?.rainfall : null}
+              followPoint={selectedArea}
+              onApplyDesignRainfall={(val) => {
+                setSettings((current) => ({ ...current, design_rainfall_mm: val }));
+                requestAnalysis();
+              }}
+              defaultLat={selectedArea?.latitude || analysisResult?.recommended_site?.latitude || 21.26}
+              defaultLon={selectedArea?.longitude || analysisResult?.recommended_site?.longitude || 81.28}
+            />
+
+          </div>
+
+          <div className="sidebar-panel" role="tabpanel" id="panel-more" aria-labelledby="tab-more" hidden={tab !== 'more'}>
+            <HistoryPanel
+              entries={history}
+              onRestore={(entry) => {
+                handleRestore(entry);
+                setTab('plan');
+              }}
+              onClear={() => setHistory(clearHistory())}
+              disabled={isLoading}
+            />
+            {history.length === 0 && (
+              <div className="empty-state empty-state-compact">
+                <h3>No recent analyses</h3>
+                <p>Finished recommendations are kept here in this browser so you can reopen them.</p>
               </div>
+            )}
+            <ClusterPanel cluster={cluster} activeProgress={isLoading ? progress : null} />
+            <div className="about-card">
+              <strong>Data &amp; licences</strong>
+              <p>All maps and data come from free, open services that need no API key.</p>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setGuideOpen(true)}>
+                See sources in the guide
+              </button>
             </div>
-          )}
-
-          <ResultsToolbar result={analysisResult} selectedArea={selectedArea} />
-
-          <ProcessingNotesBanner
-            status={analysisResult?.status}
-            notes={analysisResult?.processing_notes}
-            response={analysisResult}
-          />
-
-          <SiteSummaryPanel
-            recommendedSite={analysisResult?.recommended_site}
-            alternativeSites={analysisResult?.alternative_sites}
-            onSelectSite={setFocusedSite}
-            onPanToSite={setFocusedSite}
-          />
-
-          <CatchmentDetailsPanel catchment={analysisResult?.catchment} />
-
-          <RainfallPanel
-            rainfall={resultMatchesSelection ? analysisResult?.rainfall : null}
-            followPoint={selectedArea}
-            onApplyDesignRainfall={(val) => {
-              setSettings((current) => ({ ...current, design_rainfall_mm: val }));
-              requestAnalysis();
-            }}
-            defaultLat={selectedArea?.latitude || analysisResult?.recommended_site?.latitude || 21.26}
-            defaultLon={selectedArea?.longitude || analysisResult?.recommended_site?.longitude || 81.28}
-          />
-
-          <ClusterPanel cluster={cluster} activeProgress={isLoading ? progress : null} />
-
-          <HistoryPanel
-            entries={history}
-            onRestore={handleRestore}
-            onClear={() => setHistory(clearHistory())}
-            disabled={isLoading}
-          />
+          </div>
         </aside>
 
         <main className="map-area" aria-label="Interactive GIS Map View">
@@ -438,6 +512,8 @@ export default function App() {
           />
         </main>
       </div>
+
+      <HelpGuide isOpen={guideOpen} onClose={closeGuide} />
     </div>
   );
 }

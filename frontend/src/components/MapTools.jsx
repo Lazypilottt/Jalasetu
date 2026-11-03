@@ -3,6 +3,7 @@ import { Circle, GeoJSON, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { searchPlaces } from '../api/catchmentApi';
 import { INFRASTRUCTURE_CATEGORIES } from '../utils/settings';
+import { BASEMAPS } from '../utils/basemaps';
 
 /** Map colours per infrastructure category (also used by the legend swatches). */
 export const CATEGORY_COLORS = {
@@ -280,18 +281,45 @@ export const LAYER_OPTIONS = [
   { id: 'manual', label: 'Marked zones' },
 ];
 
-export function LayerPanel({ layers, onChange }) {
+export function LayerPanel({ layers, onChange, base, onBaseChange }) {
   const [open, setOpen] = useState(false);
   return (
     <div className={`layer-panel ${open ? 'open' : ''}`}>
-      <button type="button" className="map-action-btn layer-panel-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="Overlay layers">
+      <button
+        type="button"
+        className="map-action-btn layer-panel-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title="Base map and overlays"
+      >
         ☰ <span className="layer-panel-label">Layers</span>
       </button>
       {open && (
-        <ul className="layer-panel-list">
-          {LAYER_OPTIONS.map((option) => (
-            <li key={option.id}>
-              <label>
+        <div className="layer-panel-list">
+          {onBaseChange && (
+            <fieldset className="layer-panel-group">
+              <legend>Base map</legend>
+              <div className="basemap-grid">
+                {BASEMAPS.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    className={`basemap-option basemap-${b.id} ${base === b.id ? 'active' : ''}`}
+                    onClick={() => onBaseChange(b.id)}
+                    aria-pressed={base === b.id}
+                    title={b.hint}
+                  >
+                    <span className="basemap-swatch" aria-hidden="true" />
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          )}
+          <fieldset className="layer-panel-group">
+            <legend>Overlays</legend>
+            {LAYER_OPTIONS.map((option) => (
+              <label key={option.id}>
                 <input
                   type="checkbox"
                   checked={layers[option.id]}
@@ -299,9 +327,9 @@ export function LayerPanel({ layers, onChange }) {
                 />
                 {option.label}
               </label>
-            </li>
-          ))}
-        </ul>
+            ))}
+          </fieldset>
+        </div>
       )}
     </div>
   );
