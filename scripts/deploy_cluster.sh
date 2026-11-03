@@ -107,6 +107,9 @@ deploy_edge() {
   else
     echo '    [dry-run] (cd frontend && VITE_API_BASE_URL="" npm run build)'
   fi
+  # Replace the built frontend wholesale: tar only adds files, and stale
+  # bundles from older builds would otherwise accumulate in dist/assets.
+  remote sys1 <<<"rm -rf frontend/dist"
   sync_paths sys1 app/__init__.py app/services/__init__.py app/services/rainfall_service.py app/services/infrastructure.py \
     distributed/__init__.py distributed/capacity.py distributed/sys1.py frontend/dist deploy/supervisor/sys1.conf
   [ "$PRUNE" -eq 1 ] && remote sys1 <<<"$PRUNE_SCRIPT"
