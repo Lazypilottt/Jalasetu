@@ -192,6 +192,10 @@ class CatchmentResponse(BaseModel):
     dem_mesh: Optional[Dict[str, Any]] = Field(
         None, description="Downsampled 3D elevation mesh and relief matrix for raised-relief rendering"
     )
+    execution: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Distributed deployments only: the node and duration of each pipeline stage",
+    )
     processing_notes: List[str] = Field(
         default_factory=list,
         examples=[

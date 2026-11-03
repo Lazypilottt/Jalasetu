@@ -54,6 +54,15 @@ a 10,000-node dataset using shortest-path routing. See [Location API](#location-
   terrain slope, elevation range, suitability score, and processing notes.
 - Focus the map on any recommended or alternative candidate.
 - Receive clear validation, server, timeout, and processing error messages.
+- Tune the analysis in **Analysis settings**: Quick / Balanced / Detailed
+  presets, a 50–1000 m selection radius, land-cover curve-number presets,
+  design storm, pond depth, slope limits, and MCDM weights (shown as their
+  normalised shares).
+- Follow a live pipeline stepper showing which cluster node runs each stage,
+  plus a cluster panel with per-node memory and storage against their budgets.
+- Export results as GeoJSON (QGIS / Google Earth), CSV, or full JSON, and copy
+  a link that reopens the same selected area.
+- Reopen recent analyses (kept in this browser only).
 
 ### Terrain and hydrology pipeline
 
@@ -560,34 +569,33 @@ git diff --check
 
 ## Distributed services
 
-The optional `distributed/` package separates the pipeline into stages:
+The `distributed/` package runs the backend across four nodes, each sized at
+500 MB of RAM and 1.5 GB of storage:
 
-| Service | Default port | Responsibility |
+| Service | Local port | Responsibility |
 |---|---:|---|
-| `distributed.sys2` | `3002` | Parse contours and build the DEM. |
-| `distributed.sys3` | `3003` | Analyze terrain and rank pond sites. |
-| `distributed.sys4` | `3000` | Gateway/orchestration service and catchment stage. |
+| `distributed.sys1` | `3001` | Edge: built SPA and the climate/rainfall API. Standard library only. |
+| `distributed.sys2` | `3002` | Stage worker: any heavy stage; wins ties for parse + DEM and catchment. |
+| `distributed.sys3` | `3003` | Stage worker: any heavy stage; wins ties for terrain + ranking. |
+| `distributed.sys4` | `3000` | Gateway: job queue, capacity-aware scheduler, and fallback for any stage. |
 
-For a local distributed smoke test:
+Stages are placed by measured memory headroom and load rather than pinned to a
+node. A worker refuses a stage (HTTP 503) when it would leave less than 150 MB
+under its budget, and the gateway moves on to the next node. Each analysis
+reports where every stage ran (`execution.stages`), and `GET /v1/cluster`
+shows live per-node memory and storage. See
+[`distributed/README.md`](./distributed/README.md) for the design.
+
+For a local four-process run:
 
 ```bash
 ./scripts/run_distributed.sh
+cd frontend && VITE_API_BASE_URL=http://127.0.0.1:3000 npm run dev
 ```
 
-The script starts `sys2` and `sys3`, then runs `sys4`. Configuration can be
-overridden with:
-
-```bash
-JALASETU_SYS2_URL=http://127.0.0.1:3002 \
-JALASETU_SYS3_URL=http://127.0.0.1:3003 \
-JALASETU_PORT=3000 \
-./scripts/run_distributed.sh
-```
-
-The standard frontend is configured for the FastAPI service on port 8000; point
-`VITE_API_BASE_URL` at a compatible gateway if using the distributed deployment.
-
----
+With the distributed gateway, the frontend shows live stage progress per node
+and a cluster capacity panel. With the single-node FastAPI app it falls back to
+the synchronous `/analyzeContour` call and hides the cluster panel.
 
 ## Deployment
 
@@ -616,6 +624,11 @@ for a systemd-based deployment on a Linux host. Review it before use because it
 updates the target checkout and requires administrative privileges.
 
 ### Verified four-node deployment
+
+> This section records the deployment currently running on the cluster, which
+> predates the capacity-aware scheduler. Roll the Beta out with
+> `scripts/deploy_cluster.sh` (dry run by default); see
+> [`distributed/README.md`](./distributed/README.md).
 
 The distributed deployment has been deployed and verified end-to-end across
 four cluster nodes. The public application entry point is:

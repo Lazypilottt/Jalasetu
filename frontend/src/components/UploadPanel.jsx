@@ -58,6 +58,8 @@ function validateContourFile(file) {
  * @param {Function} [props.onUpload] - Backwards-compatible callback alias for onAnalysisComplete.
  * @param {Function} [props.analyzeContourFn] - Optional custom analysis API function (defaults to analyzeContourFile).
  * @param {Object} [props.params] - Optional pipeline tuning parameters to pass to the API.
+ * @param {React.ReactNode} [props.loadingContent] - Replaces the default loading card (e.g. live pipeline progress).
+ * @param {boolean} [props.canAnalyze=true] - False blocks analysis (e.g. invalid settings).
  */
 export default function UploadPanel({
   onAnalysisComplete,
@@ -70,6 +72,8 @@ export default function UploadPanel({
   params = {},
   analysisRequestToken = 0,
   allowDefaultContour = false,
+  loadingContent = null,
+  canAnalyze = true,
 }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'error' | 'success'
@@ -184,7 +188,7 @@ export default function UploadPanel({
    * Dispatches the analysis API call.
    */
   const handleAnalyze = async () => {
-    if ((!selectedFile && !allowDefaultContour) || isLoading) return;
+    if ((!selectedFile && !allowDefaultContour) || isLoading || !canAnalyze) return;
 
     // Validate before submit
     const validation = selectedFile
@@ -347,7 +351,8 @@ export default function UploadPanel({
         )}
 
         {/* Loading State: Progress Indicator & Reassuring Non-technical Copy */}
-        {isLoading && (
+        {isLoading && loadingContent}
+        {isLoading && !loadingContent && (
           <div className="loading-progress-card" role="status" aria-live="polite">
             <div className="loading-header">
               <div className="loading-spinner"></div>
@@ -407,7 +412,7 @@ export default function UploadPanel({
               className="btn btn-primary btn-block"
               type="button"
               onClick={handleAnalyze}
-              disabled={isLoading}
+              disabled={isLoading || !canAnalyze}
             >
               {isLoading ? (
                 <>

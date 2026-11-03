@@ -1,25 +1,59 @@
+# Four-node layout mirroring sys1-sys4, each capped at 500 MB of RAM with no
+# swap. Build the frontend first: (cd frontend && VITE_API_BASE_URL="" npm run build)
+x-limits: &limits
+  mem_limit: 500m
+  memswap_limit: 500m
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "2" }
+
+x-node: &node
+  <<: *limits
+  build:
+    context: .
+    dockerfile: Dockerfile.distributed
+
+x-env: &env
+  PYTHONUNBUFFERED: "1"
+  JALASETU_PORT: "3000"
+  JALASETU_MEMORY_BUDGET_MB: "500"
+  JALASETU_STORAGE_BUDGET_MB: "1536"
+  JALASETU_DEPLOY_ROOT: /app
+  JALASETU_OTEL_ENABLED: "false"
+
 services:
+  sys1:
+    # Standard library only, like the real sys1: no geospatial stack.
+    <<: *limits
+    image: python:3.11-slim
+    working_dir: /app
+    command: python -m distributed.sys1
+    volumes:
+      - ./app:/app/app:ro
+      - ./distributed:/app/distributed:ro
+      - ./frontend/dist:/app/frontend/dist:ro
+    environment:
+      <<: *env
+      JALASETU_NODE_NAME: sys1
+      GATEWAY_URL: http://sys4:3000
+    ports: ["3001:3000"]
   sys2:
-    build: .
+    <<: *node
     command: python -m distributed.sys2
-    ports: ["3002:3000"]
-    environment:
-      PYTHONUNBUFFERED: "1"
-      JALASETU_PORT: "3000"
+    environment: *env
   sys3:
-    build: .
+    <<: *node
     command: python -m distributed.sys3
-    ports: ["3003:3000"]
-    environment:
-      PYTHONUNBUFFERED: "1"
-      JALASETU_PORT: "3000"
+    environment: *env
   sys4:
-    build: .
+    <<: *node
     command: python -m distributed.sys4
+    depends_on: [sys1, sys2, sys3]
     ports: ["3000:3000"]
-    depends_on: [sys2, sys3]
     environment:
-      PYTHONUNBUFFERED: "1"
-      JALASETU_SYS2_URL: http://sys2:3000
-      JALASETU_SYS3_URL: http://sys3:3000
-      JALASETU_PORT: "3000"
+      <<: *env
+      JALASETU_NODE_NAME: sys4
+      JALASETU_WORKERS: sys2=http://sys2:3000,sys3=http://sys3:3000
+      JALASETU_EDGE_URL: http://sys1:3000
+      JALASETU_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173

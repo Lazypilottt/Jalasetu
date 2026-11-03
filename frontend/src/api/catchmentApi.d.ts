@@ -80,6 +80,63 @@ export interface CatchmentResponse {
   alternative_sites: PondSiteSummary[];
   catchment?: CatchmentSummary | null;
   processing_notes: string[];
+  /** Distributed deployments only: where and how long each stage ran. */
+  execution?: AnalysisExecution | null;
+}
+
+export interface StageRecord {
+  stage: 'prepare' | 'analyze' | 'catchment' | 'climate';
+  node: string;
+  mode: 'remote' | 'local' | 'local-degraded';
+  duration_ms: number;
+  attempts: Array<{ node: string; outcome: string }>;
+}
+
+export interface AnalysisExecution {
+  gateway: string;
+  job_id?: string;
+  total_ms: number;
+  stages: StageRecord[];
+}
+
+export interface AnalysisProgress {
+  job_id: string;
+  state: 'queued' | 'running' | 'succeeded' | 'failed';
+  stage: string | null;
+  node: string | null;
+  waiting_for_capacity: boolean;
+  queue_position: number;
+  stages: StageRecord[];
+  poll_url?: string;
+  error?: string;
+  result?: CatchmentResponse;
+}
+
+export interface ClusterNode {
+  name: string;
+  role: 'edge' | 'stage-worker' | 'gateway' | string;
+  local: boolean;
+  reachable: boolean | null;
+  stages: string[];
+  affinity: string[];
+  capacity: {
+    accepting?: boolean;
+    in_flight?: number;
+    slots?: number;
+    stage_reserve_mb?: number;
+    memory?: { used_mb: number; budget_mb: number; headroom_mb: number; source: string };
+  };
+  storage: { used_mb: number | null; budget_mb: number; within_budget: boolean | null };
+  latency_ms: number | null;
+  pending: number;
+  stages_run: number;
+}
+
+export interface ClusterStatus {
+  cluster_status: 'ok' | 'degraded';
+  nodes: ClusterNode[];
+  jobs: { running: number; queued: number; max_active: number; max_queued: number };
+  budgets: { memory_mb: number; storage_mb: number };
 }
 
 export interface ContourAnalysisParams {
@@ -132,6 +189,17 @@ export function analyzeContourMap(
   options?: Record<string, any>
 ): Promise<CatchmentResponse>;
 
+export function buildAnalysisForm(file: File | Blob | null, params?: ContourAnalysisParams): FormData;
+
+export function runAnalysis(
+  file: File | Blob | null,
+  params?: ContourAnalysisParams,
+  options?: { onProgress?: (progress: AnalysisProgress) => void; signal?: AbortSignal }
+): Promise<CatchmentResponse>;
+
+/** Resolves to null on the single-node FastAPI backend. */
+export function getClusterStatus(options?: { signal?: AbortSignal }): Promise<ClusterStatus | null>;
+
 export function getHealthStatus(): Promise<HealthResponse>;
 
 export function getCatchmentSchema(): Promise<any>;
@@ -143,6 +211,9 @@ export const API_BASE_URL: string;
 declare const catchmentApi: {
   analyzeContourFile: typeof analyzeContourFile;
   analyzeContourMap: typeof analyzeContourMap;
+  runAnalysis: typeof runAnalysis;
+  buildAnalysisForm: typeof buildAnalysisForm;
+  getClusterStatus: typeof getClusterStatus;
   getHealthStatus: typeof getHealthStatus;
   getCatchmentSchema: typeof getCatchmentSchema;
   normalizeCatchmentError: typeof normalizeCatchmentError;

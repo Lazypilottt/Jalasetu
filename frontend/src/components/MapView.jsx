@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, useMap, LayersControl, Circle, Marker, Popup, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ResultsLayer, { computeCombinedResultsBounds, hasValidGeoJSONGeometry } from './ResultsLayer';
-import RaisedReliefModal from './RaisedReliefModal';
+
+// three.js is ~500 kB; load the 3D viewer only when it is first opened.
+const RaisedReliefModal = lazy(() => import('./RaisedReliefModal'));
 
 // Fix default Leaflet icon paths in Vite / Webpack asset bundling environments
 delete L.Icon.Default.prototype._getIconUrl;
@@ -467,7 +469,7 @@ export default function MapView({
 
       <div className="map-selection-hint" role="status">
         <span className="map-selection-hint-icon">⌖</span>
-        <span>{selectedArea ? 'Click the map to move the selected area' : 'Click the map to select a 250 m area'}</span>
+        <span>{selectedArea ? 'Click the map to move the selected area' : `Click the map to select a ${selectionRadiusM} m area`}</span>
       </div>
 
       {hasAnalysisData && <MapResultSummary analysisData={analysisData} />}
@@ -603,12 +605,16 @@ export default function MapView({
       </MapContainer>
 
       {/* 3D Raised-Relief Interactive Terrain Modal */}
-      <RaisedReliefModal
-        isOpen={is3DModalOpen}
-        onClose={() => setIs3DModalOpen(false)}
-        demMesh={analysisData?.dem_mesh}
-        analysisData={analysisData}
-      />
+      {is3DModalOpen && (
+        <Suspense fallback={<div className="modal-loading" role="status">Loading 3D viewer…</div>}>
+          <RaisedReliefModal
+            isOpen={is3DModalOpen}
+            onClose={() => setIs3DModalOpen(false)}
+            demMesh={analysisData?.dem_mesh}
+            analysisData={analysisData}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

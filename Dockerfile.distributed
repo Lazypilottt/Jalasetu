@@ -1,0 +1,26 @@
+# Slim image for the distributed stage workers and gateway. Each node has a
+# 1.5 GB storage budget: no compilers or GDAL headers (the rasterio, shapely
+# and pyproj wheels bundle their own libraries) and no dev/test packages.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MALLOC_ARENA_MAX=2 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    NUMBA_NUM_THREADS=1
+
+WORKDIR /app
+COPY requirements-runtime.txt .
+RUN pip install -r requirements-runtime.txt \
+    && find /usr/local/lib -name '__pycache__' -prune -exec rm -rf {} + \
+    && find /usr/local/lib -path '*/tests/*' -name '*.py' -delete
+
+COPY app ./app
+COPY distributed ./distributed
+COPY contours_1m.kml .
+
+EXPOSE 3000
+CMD ["python", "-m", "distributed.sys4"]

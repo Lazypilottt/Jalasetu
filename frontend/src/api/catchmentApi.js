@@ -282,6 +282,32 @@ export function normalizeCatchmentError(error) {
  * @throws {CatchmentApiError} Normalized error object: { status: number, message: string }.
  */
 export async function analyzeContourFile(file, params = {}, options = {}) {
+  const formData = buildAnalysisForm(file, params);
+
+  try {
+    const response = await apiClient.post('/analyzeContour', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      ...options,
+    });
+
+    return response.data;
+  } catch (error) {
+    throw normalizeCatchmentError(error);
+  }
+}
+
+/**
+ * Builds the multipart body shared by the synchronous and job-based endpoints.
+ * Only explicitly provided keys are appended so backend defaults still apply.
+ *
+ * @param {File|Blob|null} file
+ * @param {ContourAnalysisParams} params
+ * @returns {FormData}
+ * @throws {CatchmentApiError} When there is neither a file nor a selected area.
+ */
+export function buildAnalysisForm(file, params = {}) {
   const hasSelectedArea =
     params &&
     Number.isFinite(Number(params.selected_latitude)) &&
@@ -292,13 +318,11 @@ export async function analyzeContourFile(file, params = {}, options = {}) {
     throw new CatchmentApiError(400, 'Please select a valid .kml or .kmz contour file to analyze.');
   }
 
-  // 1. Build multipart/form-data request
   const formData = new FormData();
   if (file) {
     formData.append('file', file);
   }
 
-  // 2. Append optional override params only if explicitly provided (never send unprovided defaults)
   if (params && typeof params === 'object') {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
@@ -313,18 +337,104 @@ export async function analyzeContourFile(file, params = {}, options = {}) {
       }
     });
   }
+  return formData;
+}
 
-  // 3. Dispatch POST request to /analyzeContour endpoint
+/**
+ * Progress snapshot reported while a distributed analysis job runs.
+ * @typedef {Object} AnalysisProgress
+ * @property {'queued'|'running'|'succeeded'|'failed'} state
+ * @property {string|null} stage - Current stage: prepare | analyze | catchment | climate
+ * @property {string|null} node - Cluster node running the current stage
+ * @property {boolean} waiting_for_capacity - Every node is busy; the stage is waiting
+ * @property {number} queue_position - 1-based position while queued
+ * @property {Array<{stage: string, node: string, mode: string, duration_ms: number}>} stages
+ */
+
+const JOB_POLL_INTERVAL_MS = 700;
+const JOB_TIMEOUT_MS = 6 * 60 * 1000;
+let jobsEndpointAvailable = null; // null = not probed yet
+
+const sleep = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new CatchmentApiError(0, 'Analysis was cancelled.'));
+    }, { once: true });
+  });
+
+/**
+ * Runs an analysis through the distributed job queue, reporting stage progress.
+ * Falls back to the synchronous /analyzeContour endpoint when the backend is
+ * the single-node FastAPI app (no /v1/jobs route).
+ *
+ * @param {File|Blob|null} file
+ * @param {ContourAnalysisParams} [params={}]
+ * @param {{ onProgress?: (p: AnalysisProgress) => void, signal?: AbortSignal }} [options={}]
+ * @returns {Promise<CatchmentResponse>}
+ * @throws {CatchmentApiError}
+ */
+export async function runAnalysis(file, params = {}, { onProgress, signal } = {}) {
+  if (jobsEndpointAvailable === false) {
+    return analyzeContourFile(file, params, { signal });
+  }
+
+  const formData = buildAnalysisForm(file, params);
+  let job;
   try {
-    const response = await apiClient.post('/analyzeContour', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      ...options,
+    const response = await apiClient.post('/v1/jobs', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      signal,
     });
-
-    return response.data;
+    job = response.data;
+    jobsEndpointAvailable = true;
   } catch (error) {
+    const status = error?.response?.status;
+    if (status === 404 || status === 405) {
+      jobsEndpointAvailable = false;
+      return analyzeContourFile(file, params, { signal });
+    }
+    throw normalizeCatchmentError(error);
+  }
+
+  onProgress?.(job);
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(JOB_POLL_INTERVAL_MS, signal);
+    let current;
+    try {
+      current = (await apiClient.get(job.poll_url || `/v1/jobs/${job.job_id}`, { signal, timeout: 15000 })).data;
+    } catch (error) {
+      // A dropped poll is not a failed job; retry until the deadline.
+      if (error?.response?.status === 404) {
+        throw new CatchmentApiError(404, 'The analysis job expired on the server. Please run it again.');
+      }
+      if (signal?.aborted) throw new CatchmentApiError(0, 'Analysis was cancelled.');
+      continue;
+    }
+    onProgress?.(current);
+    if (current.state === 'succeeded') return current.result;
+    if (current.state === 'failed') {
+      throw new CatchmentApiError(422, current.error || 'The analysis failed on the server.', current);
+    }
+  }
+  throw new CatchmentApiError(0, 'Terrain analysis request timed out. The server took too long to respond.');
+}
+
+/**
+ * Live per-node capacity of the distributed deployment.
+ * Resolves to null when the backend is the single-node FastAPI app.
+ *
+ * @param {{ signal?: AbortSignal }} [options={}]
+ * @returns {Promise<Object|null>}
+ */
+export async function getClusterStatus({ signal } = {}) {
+  try {
+    const response = await apiClient.get('/v1/cluster', { signal, timeout: 8000 });
+    return response.data && Array.isArray(response.data.nodes) ? response.data : null;
+  } catch (error) {
+    if (error?.response?.status === 404) return null;
     throw normalizeCatchmentError(error);
   }
 }
@@ -386,6 +496,9 @@ export const analyzeContourMap = analyzeContourFile;
 export default {
   analyzeContourFile,
   analyzeContourMap,
+  runAnalysis,
+  buildAnalysisForm,
+  getClusterStatus,
   getHealthStatus,
   getCatchmentSchema,
   getRainfallData,
