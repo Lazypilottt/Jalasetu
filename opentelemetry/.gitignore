@@ -1,0 +1,2 @@
+# runtime state of grafana-local.sh (Grafana DB, logs, PIDs)
+.grafana-local/

@@ -19,3 +19,5 @@ have been intermittent. Recheck public HTTP health separately from SSH health
 before making deployment changes. On 2026-09-28, public `/health` timed out
 from the host but returned HTTP 200 when queried from sys2; sys4's local
 gateway and Nginx health endpoints also returned HTTP 200.
+
+

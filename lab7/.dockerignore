@@ -1,0 +1,15 @@
+# Only app/, requirements.txt and locations.csv belong in the API image.
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+test_api.py
+*.md
+*.docx
+*.pdf
+link.txt
+lab7-supervisor.conf
+docker-compose.yml
+.env
+.env.example
+gateway/
+.DS_Store
