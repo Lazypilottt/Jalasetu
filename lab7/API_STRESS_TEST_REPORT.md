@@ -151,13 +151,51 @@ changes.
 
 - The available attachment in this workspace contains 10,000 rows. A
   1,000,000-row attachment was not available for this run.
-- The service keeps the dataset and indexes in memory, which is appropriate
-  for the tested dataset and the stated 512 GB machines.
+- The service keeps the dataset and indexes in memory (about 65 MB per
+  instance), which fits the tested dataset on the 512 MiB cluster nodes.
 - For a true 1,000,000-row certification, startup time, resident memory,
   linkage size, and concurrent throughput should be measured again with the
   supplied million-row file.
 - The public route was verified locally on sys4 through Nginx. Access from
   outside the cluster depends on the network path and firewall rules.
+
+## Public-route re-verification (2026-11-25)
+
+All requests below went through the public entry point
+`http://10.1.75.51:3204/IP/search/`. Nginx balanced them across the four
+instances (sys1–sys4, one uvicorn worker each).
+
+| Case | Result |
+| --- | --- |
+| GET and POST, same query | HTTP 200, identical ten IDs |
+| POST with the supplied `link.txt` (14,800 links) | HTTP 200, ten IDs ranked by road distance |
+| Category in upper case (`BANK`) | HTTP 200, same IDs as `bank` |
+| Zero radius at an exact location | HTTP 200, `["1"]` |
+| Radius `999999` | HTTP 200, ten IDs |
+| Unknown category | HTTP 200, `[]` |
+| Malformed linkage line | HTTP 400 |
+| `NaN` latitude, infinite radius | HTTP 422 |
+| Negative radius, missing field | HTTP 422 |
+| Same query sent to each node directly | Identical ten IDs on all four |
+
+| Load test (public URL) | Requests | Successful | Median | 95th pct. |
+| --- | ---: | ---: | ---: | ---: |
+| 20 clients | 200 | 200 | 41 ms | 163 ms |
+| 20 clients | 1,000 | 1,000 | 132 ms | 198 ms |
+| 20 clients, one node SIGKILLed mid-run | 1,000 | 1,000 | 132 ms | 151 ms |
+
+The killed node was restarted by Supervisor within seconds; Nginx served
+in-flight requests from the other three nodes. Resident memory per instance
+was 61–65 MB.
+
+Two deployment defects were found and fixed during this run:
+
+1. The shared per-client Nginx limit (30 requests/s, burst 15) rejected 179
+   of 200 concurrent requests with HTTP 429. `/IP/search/` now has its own
+   limit of 150 requests/s, with queued bursts.
+2. After a hard kill of the uvicorn master, orphaned workers kept the port
+   and Supervisor's restarts failed. `start_lab7.sh` now clears them before
+   starting.
 
 ## Conclusion
 
